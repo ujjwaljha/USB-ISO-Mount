@@ -373,16 +373,13 @@ class MacosHost implements HostPlatform {
 
   @override
   Future<void> eject(UsbDisk disk) async {
-    var result = await _runner.run('diskutil', ['eject', disk.id]);
-    if (!result.success) {
-      result = await _runner.run('diskutil', [
-        'eject',
-        disk.id,
-      ], elevated: true);
+    var result = await _runner.run('diskutil', ['unmountDisk', disk.id]);
+    if (result.success) {
+      result = await _runner.run('diskutil', ['eject', disk.id]);
     }
     if (!result.success) {
       throw UsbIsoException(
-        'Wrote the USB, but eject failed: ${result.stderr.trim()}',
+        'Finder still has the USB open. Eject WINSETUP in Finder, then unplug it.',
       );
     }
   }

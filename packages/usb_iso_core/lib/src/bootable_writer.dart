@@ -152,23 +152,21 @@ class BootableWriter {
       );
       try {
         await _host.eject(request.disk);
+        yield const WriteProgress(
+          step: WriteStep.done,
+          message:
+              'The USB is ready. Unplug it and boot the PC from this drive '
+              'to install Windows.',
+          percent: 1,
+        );
       } on UsbIsoException catch (error) {
         yield WriteProgress(
           step: WriteStep.done,
           message:
-              'The USB is ready, but eject failed (${error.message}). '
-              'You can unplug it after Finder or Explorer releases it.',
+              'The USB is ready. ${error.message}',
           percent: 1,
         );
-        return;
       }
-
-      yield const WriteProgress(
-        step: WriteStep.done,
-        message:
-            'The USB is ready. Boot the PC from this drive to install Windows.',
-        percent: 1,
-      );
     } finally {
       if (!reuseMount) {
         try {
