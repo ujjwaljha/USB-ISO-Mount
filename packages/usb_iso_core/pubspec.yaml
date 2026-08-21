@@ -1,0 +1,14 @@
+name: usb_iso_core
+description: Shared logic to mount Windows ISOs and write UEFI-bootable USB drives.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  path: ^1.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

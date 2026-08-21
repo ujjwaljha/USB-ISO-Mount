@@ -1,0 +1,20 @@
+name: usb_iso_cli
+description: Command-line tool to mount Windows ISOs and write bootable USB drives.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.11.5
+
+executables:
+  usb_iso: usb_iso_cli
+
+dependencies:
+  args: ^2.7.0
+  path: ^1.9.0
+  usb_iso_core:
+    path: ../usb_iso_core
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

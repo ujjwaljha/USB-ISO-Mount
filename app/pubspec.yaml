@@ -1,0 +1,22 @@
+name: usb_iso_mount
+description: Create Windows 10/11 bootable USB drives on macOS and Windows.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  file_picker: ^8.3.7
+  usb_iso_core:
+    path: ../packages/usb_iso_core
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
