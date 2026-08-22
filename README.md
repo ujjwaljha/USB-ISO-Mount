@@ -77,7 +77,7 @@ The ISO is classified first (do **not** treat a hybrid MBR as Linux by itself �
 1. **Windows x64 / ARM / WinPE** — file-copy to a GPT FAT32 volume (`WINSETUP`). If `install.wim` or `install.esd` is over 4 GB:
    - Windows: FAT32 `WINBOOT` (EFI + `boot.wim`) + NTFS `WINSETUP` (the large installer image)
    - macOS / Linux: split the image to `install.swm` with wimlib
-2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style)
+2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style). On macOS these hybrid images often cannot be mounted as a volume; the app reads ISO 9660 metadata instead.
 3. **Generic UEFI** — file-copy, or raw write if the ISO file itself looks like a hybrid disk image
 4. **Multi-ISO** — reserved; not implemented (no Ventoy)
 

@@ -487,59 +487,56 @@ class MacosHost implements HostPlatform {
     }
 
     final rdisk = disk.devicePath.replaceFirst('/dev/disk', '/dev/rdisk');
-    final work = Directory.systemTemp.createTempSync('usb_iso_raw_');
-    final progressFile = File(p.join(work.path, 'progress'));
-    final cancelFile = File(p.join(work.path, 'cancel'));
-    final script = File(p.join(work.path, 'write.pl'));
-    await script.writeAsString(_rawWritePerl);
-
-    try {
-      final process = await _runner.start('perl', [
-        script.path,
-        isoPath,
-        rdisk,
-        progressFile.path,
-        cancelFile.path,
-      ], elevated: true);
-      process.stdout.drain<void>();
-      final errFuture = process.stderr.transform(utf8.decoder).join();
-
-      final total = File(isoPath).lengthSync();
-      onProgress?.call(0, total);
-      var last = 0;
-      while (true) {
-        final done = await process.exitCode.timeout(
-          const Duration(milliseconds: 250),
-          onTimeout: () => -1,
-        );
-        if (cancellation?.isCancelled == true && !cancelFile.existsSync()) {
-          cancelFile.writeAsStringSync('1');
-        }
-        if (progressFile.existsSync()) {
-          last = int.tryParse(progressFile.readAsStringSync().trim()) ?? last;
-          onProgress?.call(last, total);
-        }
-        if (done != -1) {
-          if (done == 75 || cancellation?.isCancelled == true) {
-            throw WriteCancelledException(
-              'Write cancelled. The USB was erased and may not be bootable.',
-            );
-          }
-          if (done != 0) {
-            final err = await errFuture;
-            throw UsbIsoException(
-              'Raw ISO write failed on ${disk.id}: ${err.trim()}',
-            );
-          }
-          onProgress?.call(total, total);
-          return;
-        }
-      }
-    } finally {
-      if (work.existsSync()) {
-        work.deleteSync(recursive: true);
-      }
+    const authopen = '/usr/libexec/authopen';
+    if (!File(authopen).existsSync()) {
+      throw UsbIsoException(
+        'macOS authopen is missing; cannot write a raw disk image.',
+      );
     }
+
+    // AppleScript "administrator privileges" cannot open /dev/rdisk (TCC).
+    // authopen is the supported way to get a privileged write to a disk device.
+    final process = await Process.start(authopen, ['-w', rdisk]);
+    process.stdout.drain<void>();
+    final errFuture = process.stderr.transform(utf8.decoder).join();
+
+    final total = File(isoPath).lengthSync();
+    onProgress?.call(0, total);
+    var written = 0;
+    try {
+      await process.stdin.addStream(
+        File(isoPath).openRead().map((chunk) {
+          cancellation?.throwIfCancelled(diskAlreadyErased: true);
+          written += chunk.length;
+          onProgress?.call(written, total);
+          return chunk;
+        }),
+      );
+      await process.stdin.close();
+    } catch (error) {
+      process.kill();
+      if (error is WriteCancelledException) {
+        rethrow;
+      }
+      final err = await errFuture;
+      throw UsbIsoException(
+        'Raw ISO write failed on ${disk.id}: ${err.trim().isEmpty ? error.toString() : err.trim()}',
+      );
+    }
+
+    final code = await process.exitCode;
+    if (cancellation?.isCancelled == true) {
+      throw WriteCancelledException(
+        'Write cancelled. The USB was erased and may not be bootable.',
+      );
+    }
+    if (code != 0) {
+      final err = await errFuture;
+      throw UsbIsoException(
+        'Raw ISO write failed on ${disk.id}: ${err.trim()}',
+      );
+    }
+    onProgress?.call(total, total);
   }
 
   @override
@@ -552,26 +549,6 @@ class MacosHost implements HostPlatform {
     }
   }
 }
-
-const _rawWritePerl = r'''
-use strict;
-use warnings;
-my ($src, $dst, $prog, $cancel) = @ARGV;
-open my $in, '<:raw', $src or die "open src: $!";
-open my $out, '>:raw', $dst or die "open dst: $!";
-my $written = 0;
-my $buf;
-while (1) {
-  if (-e $cancel) { exit 75; }
-  my $n = read($in, $buf, 4 * 1024 * 1024);
-  last if !defined $n || $n == 0;
-  print $out $buf;
-  $written += $n;
-  if (open my $p, '>', $prog) { print $p $written; close $p; }
-}
-close $out;
-close $in;
-''';
 
 class _HdiutilAttach {
   const _HdiutilAttach({this.mountPath, this.deviceNode});

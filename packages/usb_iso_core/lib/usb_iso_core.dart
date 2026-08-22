@@ -19,6 +19,7 @@ export 'src/file_copy.dart'
     show firstOversizedFat32File, isInstallWim, isInstallImage;
 export 'src/host_platform.dart';
 export 'src/hybrid_iso.dart';
+export 'src/iso9660.dart';
 export 'src/iso_inspector.dart';
 export 'src/iso_mounter.dart';
 export 'src/iso_validator.dart';

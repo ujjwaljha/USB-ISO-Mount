@@ -138,11 +138,22 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) {
         return;
       }
-      setState(() {
-        _error = error.message;
-        _status = 'Mount failed.';
-        _progress = 0;
-      });
+      try {
+        final profile = _inspector.inspectIsoFile(iso);
+        setState(() {
+          _isoMount = null;
+          _isoProfile = profile;
+          _status =
+              'Could not mount as a volume (typical for hybrid Linux ISOs).';
+          _error = profile.kind == IsoKind.unknown ? error.message : null;
+        });
+      } on UsbIsoException {
+        setState(() {
+          _error = error.message;
+          _status = 'Mount failed.';
+          _progress = 0;
+        });
+      }
     } finally {
       if (mounted) {
         setState(() => _busy = false);

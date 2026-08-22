@@ -85,10 +85,32 @@ class BootableWriter {
     final reuseMount =
         existing != null &&
         p.equals(p.normalize(existing.isoPath), p.normalize(request.isoPath));
-    final mount = reuseMount ? existing : await _host.mountIso(request.isoPath);
-    var shouldUnmount = !reuseMount;
+    IsoMount? mount;
+    var shouldUnmount = false;
+    late final IsoProfile profile;
+    if (reuseMount) {
+      mount = existing;
+      profile = _inspector.inspectMounted(mount.mountPath);
+    } else {
+      try {
+        mount = await _host.mountIso(request.isoPath);
+        shouldUnmount = true;
+        profile = _inspector.inspectMounted(mount.mountPath);
+      } on UsbIsoException {
+        final fromFile = _inspector.inspectIsoFile(request.isoPath);
+        final fileStrategy = LayoutChooser.strategyFor(
+          profile: fromFile,
+          windowsHost: Platform.isWindows,
+          diskSizeBytes: request.disk.sizeBytes,
+          isoLooksHybrid: isoLooksLikeHybridDisk(request.isoPath),
+        );
+        if (fileStrategy != WriteStrategy.rawHybrid) {
+          rethrow;
+        }
+        profile = fromFile;
+      }
+    }
     try {
-      final profile = _inspector.inspectMounted(mount.mountPath);
       final strategy = LayoutChooser.strategyFor(
         profile: profile,
         windowsHost: Platform.isWindows,
@@ -118,7 +140,13 @@ class BootableWriter {
       }
 
       if (strategy == WriteStrategy.windowsFileCopy) {
-        await _ensureFat32Compatible(mount.mountPath, skipWim: needsSplit);
+        final source = mount?.mountPath;
+        if (source == null) {
+          throw InvalidIsoException(
+            'Could not mount this ISO to copy installer files.',
+          );
+        }
+        await _ensureFat32Compatible(source, skipWim: needsSplit);
       }
 
       if (request.dryRun) {
@@ -136,6 +164,13 @@ class BootableWriter {
         yield* _writeRaw(request, profile, mount);
         shouldUnmount = false;
         return;
+      }
+
+      final mounted = mount;
+      if (mounted == null) {
+        throw InvalidIsoException(
+          'Could not mount this ISO to copy installer files.',
+        );
       }
 
       yield WriteProgress(
@@ -181,7 +216,7 @@ class BootableWriter {
 
       if (strategy == WriteStrategy.windowsDualPartition) {
         await for (final progress in _copyDualWithProgress(
-          mount.mountPath,
+          mounted.mountPath,
           volumes.bootMount,
           volumes.dataMount!,
           cancellation: request.cancellation,
@@ -190,7 +225,7 @@ class BootableWriter {
         }
       } else {
         await for (final progress in _copyWithProgress(
-          mount.mountPath,
+          mounted.mountPath,
           volumes.bootMount,
           skipWim: needsSplit,
           cancellation: request.cancellation,
@@ -221,7 +256,7 @@ class BootableWriter {
         percent: 0.9,
       );
       _verifyFileCopy(
-        sourceRoot: mount.mountPath,
+        sourceRoot: mounted.mountPath,
         volumes: volumes,
         profile: profile,
         strategy: strategy,
@@ -231,7 +266,7 @@ class BootableWriter {
       await _host.flushDisk(request.disk);
       yield* _eject(request);
     } finally {
-      if (shouldUnmount) {
+      if (shouldUnmount && mount != null) {
         try {
           await _host.unmountIso(mount);
         } catch (_) {
@@ -244,12 +279,14 @@ class BootableWriter {
   Stream<WriteProgress> _writeRaw(
     WriteRequest request,
     IsoProfile profile,
-    IsoMount mount,
+    IsoMount? mount,
   ) async* {
-    try {
-      await _host.unmountIso(mount);
-    } catch (_) {
-      // The ISO file is read independently for the raw write.
+    if (mount != null) {
+      try {
+        await _host.unmountIso(mount);
+      } catch (_) {
+        // The ISO file is read independently for the raw write.
+      }
     }
 
     yield WriteProgress(

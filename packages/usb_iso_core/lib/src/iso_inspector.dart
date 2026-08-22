@@ -4,6 +4,8 @@ import 'package:path/path.dart' as p;
 
 import 'bytes.dart';
 import 'exceptions.dart';
+import 'hybrid_iso.dart';
+import 'iso9660.dart';
 import 'models/iso_profile.dart';
 import 'models/windows_iso_info.dart';
 
@@ -82,6 +84,50 @@ class IsoInspector {
       bootWimPath: bootWim?.path,
       linuxMarkers: linuxMarkers,
       hasOversizedFat32File: _hasOversizedFat32File(mountPath),
+    );
+  }
+
+  /// Classifies an ISO from the file when the OS cannot mount it as a volume.
+  ///
+  /// Used for hybrid Linux images on macOS (`hdiutil: no mountable file systems`).
+  IsoProfile inspectIsoFile(String isoPath) {
+    if (!File(isoPath).existsSync()) {
+      throw InvalidIsoException('ISO not found: $isoPath');
+    }
+    final info = readIso9660Info(isoPath);
+    if (info == null) {
+      throw InvalidIsoException('Not a readable ISO 9660 image: $isoPath');
+    }
+    final hybrid = isoLooksLikeHybridDisk(isoPath);
+    final linuxMarkers = info.rootNames
+        .where(
+          (name) =>
+              name == 'casper' ||
+              name == 'live' ||
+              name == 'isolinux' ||
+              name == '.disk',
+        )
+        .toList();
+    final kind = info.hasWindowsSources
+        ? IsoKind.unknown
+        : (info.hasLinuxMarkers ||
+              (hybrid && looksLikeLinuxVolumeId(info.volumeId)))
+        ? IsoKind.linuxHybrid
+        : hybrid
+        ? IsoKind.genericUefi
+        : IsoKind.unknown;
+    return IsoProfile(
+      mountPath: isoPath,
+      kind: kind,
+      hasX64Efi: info.rootNames.contains('efi'),
+      hasArmEfi: false,
+      installKind: WindowsInstallImageKind.none,
+      installImagePath: null,
+      installImageSize: 0,
+      linuxMarkers: linuxMarkers.isEmpty && kind == IsoKind.linuxHybrid
+          ? [info.volumeId]
+          : linuxMarkers,
+      hasOversizedFat32File: false,
     );
   }
 

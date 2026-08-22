@@ -640,6 +640,22 @@ image-type      : read/write
       File(p.join(temp.path, 'readme.txt')).writeAsStringSync('nope');
       expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.unknown);
     });
+
+    test('classifies a hybrid Linux ISO from the file', () {
+      final iso = File(p.join(temp.path, 'ubuntu.iso'));
+      iso.writeAsBytesSync(_minimalLinuxIso());
+      final profile = IsoInspector().inspectIsoFile(iso.path);
+      expect(profile.kind, IsoKind.linuxHybrid);
+      expect(readIso9660Info(iso.path)?.volumeId, contains('Ubuntu'));
+    });
+
+    test('classifies the local Ubuntu ISO when present', () {
+      const path = '/Users/ujjwaljha/Downloads/ubuntu-26.04-desktop-amd64.iso';
+      if (!File(path).existsSync()) {
+        return;
+      }
+      expect(IsoInspector().inspectIsoFile(path).kind, IsoKind.linuxHybrid);
+    });
   });
 
   group('LayoutChooser', () {
@@ -937,4 +953,37 @@ void _writeLinuxLayout(Directory root) {
   File(p.join(root.path, 'efi', 'boot', 'bootx64.efi')).writeAsBytesSync([1]);
   Directory(p.join(root.path, 'casper')).createSync();
   File(p.join(root.path, 'casper', 'vmlinuz')).writeAsBytesSync([1, 2, 3]);
+}
+
+/// Tiny ISO 9660 image with a hybrid MBR, volume id, and a `CASPER` directory.
+List<int> _minimalLinuxIso() {
+  const sector = 2048;
+  final bytes = List<int>.filled(21 * sector, 0);
+  bytes[510] = 0x55;
+  bytes[511] = 0xAA;
+  final pvd = 16 * sector;
+  bytes[pvd] = 1;
+  final id = 'CD001'.codeUnits;
+  for (var i = 0; i < id.length; i++) {
+    bytes[pvd + 1 + i] = id[i];
+  }
+  final volume = 'Ubuntu 26.04 amd64'.padRight(32).codeUnits;
+  for (var i = 0; i < volume.length; i++) {
+    bytes[pvd + 40 + i] = volume[i];
+  }
+  const rootLba = 20;
+  bytes[pvd + 156] = 34;
+  bytes[pvd + 158] = rootLba;
+  bytes[pvd + 166] = 0x00;
+  bytes[pvd + 167] = 0x08;
+  final dir = rootLba * sector;
+  const name = 'CASPER';
+  const recordLen = 40;
+  bytes[dir] = recordLen;
+  bytes[dir + 25] = 2;
+  bytes[dir + 32] = name.length;
+  for (var i = 0; i < name.length; i++) {
+    bytes[dir + 33 + i] = name.codeUnitAt(i);
+  }
+  return bytes;
 }

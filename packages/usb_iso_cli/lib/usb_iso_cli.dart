@@ -80,15 +80,30 @@ class MountCommand extends Command<int> {
   @override
   Future<int> run() async {
     final iso = _requireIso();
-    final mount = await IsoMounter().mount(iso);
-    final profile = IsoInspector().inspectMounted(mount.mountPath);
-    stdout.writeln('Mounted at ${mount.mountPath}');
-    stdout.writeln(profile.summary);
-    if (profile.kind == IsoKind.unknown) {
-      stderr.writeln(profile.unsupportedMessage);
-      return 2;
+    try {
+      final mount = await IsoMounter().mount(iso);
+      final profile = IsoInspector().inspectMounted(mount.mountPath);
+      stdout.writeln('Mounted at ${mount.mountPath}');
+      stdout.writeln(profile.summary);
+      stdout.writeln(profile.layoutSummary(_strategy(profile, iso)));
+      if (profile.kind == IsoKind.unknown) {
+        stderr.writeln(profile.unsupportedMessage);
+        return 2;
+      }
+      return 0;
+    } on UsbIsoException {
+      final profile = IsoInspector().inspectIsoFile(iso);
+      stdout.writeln(
+        'Could not mount as a volume (typical for hybrid Linux ISOs).',
+      );
+      stdout.writeln(profile.summary);
+      stdout.writeln(profile.layoutSummary(_strategy(profile, iso)));
+      if (profile.kind == IsoKind.unknown) {
+        stderr.writeln(profile.unsupportedMessage);
+        return 2;
+      }
+      return 0;
     }
-    return 0;
   }
 
   String _requireIso() {
@@ -97,6 +112,15 @@ class MountCommand extends Command<int> {
       throw UsageException('Missing --iso', usage);
     }
     return iso;
+  }
+
+  WriteStrategy _strategy(IsoProfile profile, String iso) {
+    return LayoutChooser.strategyFor(
+      profile: profile,
+      windowsHost: Platform.isWindows,
+      diskSizeBytes: 0,
+      isoLooksHybrid: isoLooksLikeHybridDisk(iso),
+    );
   }
 }
 
