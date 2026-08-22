@@ -40,6 +40,23 @@ class DiskId {
       return match.group(1)!;
     }
 
+    if (os == 'linux') {
+      var id = trimmed.replaceFirst(RegExp(r'^/dev/'), '');
+      if (RegExp(
+        r'^(sd[a-z]\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)$',
+      ).hasMatch(id)) {
+        throw UsbIsoException(
+          'Use the whole disk (for example sda), not a partition ($id).',
+        );
+      }
+      if (!RegExp(r'^(sd[a-z]+|nvme\d+n\d+|mmcblk\d+)$').hasMatch(id)) {
+        throw UsbIsoException(
+          'Expected a disk id like sda or nvme0n1, got "$raw".',
+        );
+      }
+      return id;
+    }
+
     throw UnsupportedPlatformException('Disk ids are not supported on $os.');
   }
 }

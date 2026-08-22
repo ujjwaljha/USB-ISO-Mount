@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:usb_iso_core/usb_iso_core.dart';
@@ -18,18 +20,20 @@ class _HomePageState extends State<HomePage> {
   final _disks = DiskEnumerator();
   final _mounter = IsoMounter();
   final _writer = BootableWriter();
-  final _validator = WindowsIsoValidator();
+  final _inspector = IsoInspector();
 
   List<UsbDisk> _usbDisks = [];
   UsbDisk? _selected;
   String? _isoPath;
   IsoMount? _isoMount;
-  String? _isoSummary;
+  IsoProfile? _isoProfile;
   String? _error;
   String? _status;
   double? _progress;
   bool _busy = false;
   bool _loadingDisks = true;
+  bool _showAdvanced = false;
+  CancellationToken? _writeCancel;
 
   @override
   void initState() {
@@ -43,7 +47,10 @@ class _HomePageState extends State<HomePage> {
       _error = null;
     });
     try {
-      final disks = await (widget.listDisks ?? _disks.listRemovableUsb)();
+      final disks =
+          await (widget.listDisks ??
+              (() =>
+                  _disks.listRemovableUsb(includeAdvanced: _showAdvanced)))();
       if (!mounted) {
         return;
       }
@@ -72,7 +79,7 @@ class _HomePageState extends State<HomePage> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['iso'],
-      dialogTitle: 'Choose a Windows 10/11 ISO',
+      dialogTitle: 'Choose an ISO image',
     );
     final path = result?.files.single.path;
     if (path == null) {
@@ -84,7 +91,7 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() {
       _isoPath = path;
-      _isoSummary = null;
+      _isoProfile = null;
       _error = null;
     });
   }
@@ -105,7 +112,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _mountIso() async {
     final iso = _isoPath;
     if (iso == null) {
-      setState(() => _error = 'Choose a Windows ISO first.');
+      setState(() => _error = 'Choose an ISO first.');
       return;
     }
     setState(() {
@@ -115,17 +122,16 @@ class _HomePageState extends State<HomePage> {
     });
     try {
       final mount = await _mounter.mount(iso);
-      final info = _validator.inspectMounted(mount.mountPath);
+      final profile = _inspector.inspectMounted(mount.mountPath);
       if (!mounted) {
         return;
       }
       setState(() {
         _isoMount = mount;
-        _isoSummary = info.summary;
+        _isoProfile = profile;
         _status = 'Mounted at ${mount.mountPath}';
-        if (!info.isValid) {
-          _error =
-              'Mounted, but this does not look like a Windows 10/11 installer.';
+        if (profile.kind == IsoKind.unknown) {
+          _error = profile.unsupportedMessage;
         }
       });
     } on UsbIsoException catch (error) {
@@ -175,7 +181,7 @@ class _HomePageState extends State<HomePage> {
     final iso = _isoPath;
     final disk = _selected;
     if (iso == null) {
-      setState(() => _error = 'Choose a Windows ISO first.');
+      setState(() => _error = 'Choose an ISO first.');
       return;
     }
     if (disk == null) {
@@ -185,17 +191,19 @@ class _HomePageState extends State<HomePage> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => _EraseDialog(disk: disk),
+      builder: (context) => _EraseDialog(disk: disk, profile: _isoProfile),
     );
     if (confirmed != true || !mounted) {
       return;
     }
 
+    final token = CancellationToken();
     setState(() {
       _busy = true;
       _error = null;
       _progress = 0;
       _status = 'Starting…';
+      _writeCancel = token;
     });
 
     try {
@@ -205,6 +213,8 @@ class _HomePageState extends State<HomePage> {
           disk: disk,
           confirmed: true,
           existingMount: _isoMount,
+          allowAdvancedTargets: _showAdvanced,
+          cancellation: token,
         ),
       )) {
         if (!mounted) {
@@ -215,7 +225,17 @@ class _HomePageState extends State<HomePage> {
           _progress = event.percent;
         });
       }
+      await _unmountQuietly();
       await _refreshDisks();
+    } on WriteCancelledException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Cancelled.';
+        _progress = 0;
+      });
     } on UsbIsoException catch (error) {
       if (!mounted) {
         return;
@@ -236,9 +256,27 @@ class _HomePageState extends State<HomePage> {
       });
     } finally {
       if (mounted) {
-        setState(() => _busy = false);
+        setState(() {
+          _busy = false;
+          _writeCancel = null;
+        });
       }
     }
+  }
+
+  String? get _writeLayoutLine {
+    final profile = _isoProfile;
+    final iso = _isoPath;
+    if (profile == null) {
+      return null;
+    }
+    final strategy = LayoutChooser.strategyFor(
+      profile: profile,
+      windowsHost: Platform.isWindows,
+      diskSizeBytes: _selected?.sizeBytes ?? 0,
+      isoLooksHybrid: iso != null && isoLooksLikeHybridDisk(iso),
+    );
+    return profile.layoutSummary(strategy);
   }
 
   @override
@@ -263,7 +301,8 @@ class _HomePageState extends State<HomePage> {
                   const SizedBox(height: 24),
                   _IsoCard(
                     isoPath: _isoPath,
-                    summary: _isoSummary,
+                    summary: _isoProfile?.summary,
+                    layout: _writeLayoutLine,
                     mounted: _isoMount != null,
                     busy: _busy,
                     onBrowse: _pickIso,
@@ -276,17 +315,30 @@ class _HomePageState extends State<HomePage> {
                     selected: _selected,
                     loading: _loadingDisks,
                     busy: _busy,
+                    showAdvanced: _showAdvanced,
+                    onShowAdvanced: (value) {
+                      setState(() => _showAdvanced = value);
+                      _refreshDisks();
+                    },
                     onChanged: (disk) => setState(() => _selected = disk),
                     onRefresh: _refreshDisks,
                   ),
                   const SizedBox(height: 16),
-                  _WarningBanner(disk: _selected),
+                  _WarningBanner(disk: _selected, profile: _isoProfile),
                   const SizedBox(height: 20),
                   FilledButton.icon(
                     onPressed: _busy ? null : _makeBootable,
                     icon: const Icon(Icons.usb),
                     label: const Text('Make bootable USB'),
                   ),
+                  if (_busy) ...[
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: () => _writeCancel?.cancel(),
+                      icon: const Icon(Icons.stop),
+                      label: const Text('Cancel'),
+                    ),
+                  ],
                   if (_busy || _status != null) ...[
                     const SizedBox(height: 20),
                     _ProgressCard(
@@ -328,7 +380,7 @@ class _Header extends StatelessWidget {
         ),
         SizedBox(height: 6),
         Text(
-          'Create a Windows 10 or 11 UEFI installer USB on this Mac or PC.',
+          'Create a bootable USB from a Windows, Windows PE, or Linux live ISO.',
           style: TextStyle(color: muted, fontSize: 15, height: 1.4),
         ),
       ],
@@ -340,6 +392,7 @@ class _IsoCard extends StatelessWidget {
   const _IsoCard({
     required this.isoPath,
     required this.summary,
+    required this.layout,
     required this.mounted,
     required this.busy,
     required this.onBrowse,
@@ -349,6 +402,7 @@ class _IsoCard extends StatelessWidget {
 
   final String? isoPath;
   final String? summary;
+  final String? layout;
   final bool mounted;
   final bool busy;
   final VoidCallback onBrowse;
@@ -364,7 +418,7 @@ class _IsoCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Windows ISO',
+              'ISO image',
               style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
             ),
             const SizedBox(height: 12),
@@ -381,6 +435,10 @@ class _IsoCard extends StatelessWidget {
                 summary!,
                 style: const TextStyle(color: muted, fontSize: 13),
               ),
+            ],
+            if (layout != null) ...[
+              const SizedBox(height: 6),
+              Text(layout!, style: const TextStyle(color: muted, fontSize: 13)),
             ],
             const SizedBox(height: 16),
             Wrap(
@@ -411,6 +469,8 @@ class _UsbCard extends StatelessWidget {
     required this.selected,
     required this.loading,
     required this.busy,
+    required this.showAdvanced,
+    required this.onShowAdvanced,
     required this.onChanged,
     required this.onRefresh,
   });
@@ -419,6 +479,8 @@ class _UsbCard extends StatelessWidget {
   final UsbDisk? selected;
   final bool loading;
   final bool busy;
+  final bool showAdvanced;
+  final ValueChanged<bool> onShowAdvanced;
   final ValueChanged<UsbDisk?> onChanged;
   final VoidCallback onRefresh;
 
@@ -452,6 +514,19 @@ class _UsbCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
+            CheckboxListTile(
+              value: showAdvanced,
+              onChanged: busy
+                  ? null
+                  : (value) => onShowAdvanced(value ?? false),
+              contentPadding: EdgeInsets.zero,
+              title: const Text(
+                'Show SD / Thunderbolt drives',
+                style: TextStyle(fontSize: 13),
+              ),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+            const SizedBox(height: 8),
             if (disks.isEmpty)
               const Text(
                 'No removable USB drives found. Internal disks are hidden on purpose.',
@@ -478,13 +553,22 @@ class _UsbCard extends StatelessWidget {
 }
 
 class _WarningBanner extends StatelessWidget {
-  const _WarningBanner({required this.disk});
+  const _WarningBanner({required this.disk, this.profile});
 
   final UsbDisk? disk;
+  final IsoProfile? profile;
 
   @override
   Widget build(BuildContext context) {
     final target = disk == null ? 'the selected USB drive' : disk!.label;
+    final raw =
+        profile?.kind == IsoKind.linuxHybrid ||
+        profile?.kind == IsoKind.genericUefi;
+    final message = raw
+        ? 'This overwrites every partition on $target with the ISO image '
+              '(typical for a Linux live USB). Use a spare stick.'
+        : 'Make Bootable erases every file on $target. '
+              'Use a spare USB stick, not a backup drive.';
     return DecoratedBox(
       decoration: BoxDecoration(
         color: amberDim.withValues(alpha: 0.28),
@@ -498,13 +582,7 @@ class _WarningBanner extends StatelessWidget {
           children: [
             const Icon(Icons.warning_amber_rounded, color: amber),
             const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Make Bootable erases every file on $target. '
-                'Use a spare USB stick, not a backup drive.',
-                style: const TextStyle(height: 1.4),
-              ),
-            ),
+            Expanded(child: Text(message, style: const TextStyle(height: 1.4))),
           ],
         ),
       ),
@@ -572,9 +650,10 @@ class _ErrorCard extends StatelessWidget {
 }
 
 class _EraseDialog extends StatefulWidget {
-  const _EraseDialog({required this.disk});
+  const _EraseDialog({required this.disk, this.profile});
 
   final UsbDisk disk;
+  final IsoProfile? profile;
 
   @override
   State<_EraseDialog> createState() => _EraseDialogState();
@@ -593,10 +672,21 @@ class _EraseDialogState extends State<_EraseDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'All data on ${widget.disk.label} will be permanently deleted, '
-            'then replaced with a Windows installer.',
+            widget.profile?.kind == IsoKind.linuxHybrid ||
+                    widget.profile?.kind == IsoKind.genericUefi
+                ? 'All data on ${widget.disk.label} will be permanently deleted, '
+                      'then overwritten with the ISO image.'
+                : 'All data on ${widget.disk.label} will be permanently deleted, '
+                      'then replaced with a bootable installer.',
             style: const TextStyle(height: 1.4),
           ),
+          if (widget.disk.isAdvancedTarget) ...[
+            const SizedBox(height: 12),
+            Text(
+              'This is a ${widget.disk.busProtocol} drive, not a regular USB stick.',
+              style: const TextStyle(height: 1.4, color: amber),
+            ),
+          ],
           const SizedBox(height: 16),
           CheckboxListTile(
             value: _understood,

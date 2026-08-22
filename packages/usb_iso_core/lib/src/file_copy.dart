@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'bytes.dart';
+import 'cancellation.dart';
 
 typedef CopyProgress = void Function(int copiedBytes, int totalBytes);
 
@@ -12,6 +13,8 @@ Future<void> copyDirectory(
   String destination, {
   bool Function(File file, String relativePath)? shouldSkip,
   CopyProgress? onProgress,
+  CancellationToken? cancellation,
+  bool countSkippedInProgress = true,
 }) async {
   final sourceDir = Directory(source);
   if (!sourceDir.existsSync()) {
@@ -37,11 +40,14 @@ Future<void> copyDirectory(
   onProgress?.call(0, totalBytes);
 
   for (final file in files) {
+    cancellation?.throwIfCancelled(diskAlreadyErased: true);
     final relative = p.relative(file.path, from: source);
     final size = await file.length();
     if (shouldSkip != null && shouldSkip(file, relative)) {
-      copiedBytes += size;
-      onProgress?.call(copiedBytes, totalBytes);
+      if (countSkippedInProgress) {
+        copiedBytes += size;
+        onProgress?.call(copiedBytes, totalBytes);
+      }
       continue;
     }
 
@@ -56,6 +62,16 @@ Future<void> copyDirectory(
 bool isInstallWim(String relativePath) {
   final normalized = relativePath.replaceAll(r'\', '/').toLowerCase();
   return normalized == 'sources/install.wim';
+}
+
+bool isInstallImage(String relativePath) {
+  final normalized = relativePath.replaceAll(r'\', '/').toLowerCase();
+  return normalized == 'sources/install.wim' ||
+      normalized == 'sources/install.esd';
+}
+
+bool isOversizedFat32File(File file, {int limit = fat32MaxFileBytes}) {
+  return file.lengthSync() > limit;
 }
 
 /// Relative path of the first file over [limit], or null.
@@ -75,7 +91,7 @@ Future<String?> firstOversizedFat32File(
       continue;
     }
     final relative = p.relative(entity.path, from: mountPath);
-    if (skipWim && isInstallWim(relative)) {
+    if (skipWim && isInstallImage(relative)) {
       continue;
     }
     return relative;

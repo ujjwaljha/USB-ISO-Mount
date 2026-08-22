@@ -46,6 +46,19 @@ class UsbDisk {
     return busProtocol.toUpperCase() == 'USB';
   }
 
+  /// Removable SD / Thunderbolt / MMC — listed only when advanced targets are on.
+  bool get isAdvancedTarget {
+    if (isInternal || isBoot || isVirtual) {
+      return false;
+    }
+    final bus = busProtocol.toUpperCase();
+    return bus == 'THUNDERBOLT' ||
+        bus == 'SECURE DIGITAL' ||
+        bus == 'SD' ||
+        bus == 'MMC' ||
+        bus == 'SD/MMC';
+  }
+
   UsbDisk copyWith({List<String>? mountPoints}) {
     return UsbDisk(
       id: id,

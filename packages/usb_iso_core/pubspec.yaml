@@ -1,6 +1,6 @@
 name: usb_iso_core
-description: Shared logic to mount Windows ISOs and write UEFI-bootable USB drives.
-version: 1.0.0
+description: Shared logic to classify ISOs and write bootable USB drives.
+version: 1.1.0
 publish_to: none
 
 environment:

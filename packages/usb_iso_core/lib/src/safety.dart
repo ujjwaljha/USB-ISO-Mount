@@ -5,7 +5,10 @@ class Safety {
   Safety._();
 
   /// Throws if [disk] must not be erased.
-  static void ensureWritable(UsbDisk disk) {
+  static void ensureWritable(
+    UsbDisk disk, {
+    bool allowAdvancedTargets = false,
+  }) {
     if (disk.isBoot) {
       throw UnsafeDiskException(
         'Refusing to erase ${disk.id}: it looks like a boot disk.',
@@ -27,16 +30,26 @@ class Safety {
         'Refusing to erase ${disk.id}: disk images are not USB targets.',
       );
     }
+    if (disk.isSafeTarget) {
+      return;
+    }
+    if (disk.isAdvancedTarget) {
+      if (!allowAdvancedTargets) {
+        throw UnsafeDiskException(
+          'Refusing to erase ${disk.id}: ${disk.busProtocol} drives are hidden '
+          'unless advanced targets are enabled.',
+        );
+      }
+      return;
+    }
     if (bus != 'USB') {
       throw UnsafeDiskException(
         'Refusing to erase ${disk.id}: only USB drives are allowed '
         '(bus is ${disk.busProtocol}).',
       );
     }
-    if (!disk.isSafeTarget) {
-      throw UnsafeDiskException(
-        'Refusing to erase ${disk.id}: it is not a safe USB target.',
-      );
-    }
+    throw UnsafeDiskException(
+      'Refusing to erase ${disk.id}: it is not a safe USB target.',
+    );
   }
 }

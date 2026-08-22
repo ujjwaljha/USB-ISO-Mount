@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
 import '../bytes.dart';
+import '../cancellation.dart';
+import '../disk_layout.dart';
 import '../exceptions.dart';
 import '../host_platform.dart';
 import '../json_util.dart';
@@ -12,8 +15,19 @@ import '../process_runner.dart';
 
 const _volumeLabel = 'WINSETUP';
 
+bool isAdvancedWindowsBus(String bus) {
+  final value = bus.toUpperCase();
+  return value == 'SD' ||
+      value == 'MMC' ||
+      value == 'SD/MMC' ||
+      value == 'SECURE DIGITAL';
+}
+
 /// Parses a Get-Disk JSON object into a USB target, or null if unsafe.
-UsbDisk? usbDiskFromWindowsInfo(Map<String, dynamic> info) {
+UsbDisk? usbDiskFromWindowsInfo(
+  Map<String, dynamic> info, {
+  bool includeAdvanced = false,
+}) {
   final id = asString(info['Number']);
   if (id.isEmpty) {
     return null;
@@ -27,6 +41,8 @@ UsbDisk? usbDiskFromWindowsInfo(Map<String, dynamic> info) {
     letters.addAll(rawLetters.map((e) => '$e'));
   }
 
+  final isUsb = bus.toUpperCase() == 'USB';
+  final isAdvanced = isAdvancedWindowsBus(bus);
   final disk = UsbDisk(
     id: id,
     devicePath: '\\\\.\\PhysicalDrive$id',
@@ -35,17 +51,20 @@ UsbDisk? usbDiskFromWindowsInfo(Map<String, dynamic> info) {
         : asString(info['FriendlyName']).trim(),
     sizeBytes: asInt(info['Size']),
     busProtocol: bus,
-    isRemovable: bus.toUpperCase() == 'USB',
-    isInternal: bus.toUpperCase() != 'USB',
+    isRemovable: isUsb || isAdvanced,
+    isInternal: !isUsb && !isAdvanced,
     isBoot: isBoot,
     isVirtual: false,
     mountPoints: letters,
   );
 
-  if (bus.toUpperCase() != 'USB' || !disk.isSafeTarget) {
-    return null;
+  if (disk.isSafeTarget) {
+    return disk;
   }
-  return disk;
+  if (includeAdvanced && disk.isAdvancedTarget) {
+    return disk;
+  }
+  return null;
 }
 
 class WindowsHost implements HostPlatform {
@@ -89,7 +108,7 @@ class WindowsHost implements HostPlatform {
   }
 
   @override
-  Future<List<UsbDisk>> listUsbDisks() async {
+  Future<List<UsbDisk>> listUsbDisks({bool includeAdvanced = false}) async {
     const script = r'''
 $ErrorActionPreference = 'Stop'
 Get-Disk | ForEach-Object {
@@ -115,12 +134,18 @@ Get-Disk | ForEach-Object {
     final disks = <UsbDisk>[];
     for (final item in decodeJsonList(result.stdout)) {
       if (item is Map<String, dynamic>) {
-        final disk = usbDiskFromWindowsInfo(item);
+        final disk = usbDiskFromWindowsInfo(
+          item,
+          includeAdvanced: includeAdvanced,
+        );
         if (disk != null) {
           disks.add(disk);
         }
       } else if (item is Map) {
-        final disk = usbDiskFromWindowsInfo(Map<String, dynamic>.from(item));
+        final disk = usbDiskFromWindowsInfo(
+          Map<String, dynamic>.from(item),
+          includeAdvanced: includeAdvanced,
+        );
         if (disk != null) {
           disks.add(disk);
         }
@@ -174,7 +199,10 @@ foreach (\$vol in @(\$vols)) {
   }
 
   @override
-  Future<void> verifyWritable(UsbDisk disk) async {
+  Future<void> verifyWritable(
+    UsbDisk disk, {
+    bool allowAdvancedTargets = false,
+  }) async {
     final number = int.parse(disk.id);
     final result = await _powershell('''
 \$ErrorActionPreference = 'Stop'
@@ -194,7 +222,10 @@ foreach (\$vol in @(\$vols)) {
         'Could not re-check disk ${disk.id}: ${result.stderr.trim()}',
       );
     }
-    final current = usbDiskFromWindowsInfo(decodeJsonObject(result.stdout));
+    final current = usbDiskFromWindowsInfo(
+      decodeJsonObject(result.stdout),
+      includeAdvanced: allowAdvancedTargets,
+    );
     if (current == null || current.id != disk.id) {
       throw UnsafeDiskException(
         'Refusing to erase ${disk.id}: it is no longer a removable USB drive.',
@@ -202,16 +233,48 @@ foreach (\$vol in @(\$vols)) {
     }
   }
 
+  String _busGuard(bool allowAdvanced) {
+    if (allowAdvanced) {
+      return r"if ([string]$disk.BusType -notin @('USB','SD','MMC')) { throw 'Not a removable disk' }";
+    }
+    return r"if ([string]$disk.BusType -ne 'USB') { throw 'Not a USB disk' }";
+  }
+
   @override
-  Future<void> eraseAndFormat(UsbDisk disk) async {
+  Future<void> eraseAndFormat(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  }) async {
     await verifyWritable(disk);
     final number = int.parse(disk.id);
-    final script =
-        '''
+    final busGuard = _busGuard(disk.isAdvancedTarget);
+    final script = layout == DiskLayout.fat32PlusNtfs
+        ? '''
 \$ErrorActionPreference = 'Stop'
 \$diskNumber = $number
 \$disk = Get-Disk -Number \$diskNumber
-if ([string]\$disk.BusType -ne 'USB') { throw 'Not a USB disk' }
+$busGuard
+if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
+
+Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
+  Get-Volume -ErrorAction SilentlyContinue |
+  Dismount-Volume -Force -ErrorAction SilentlyContinue
+
+Clear-Disk -Number \$diskNumber -RemoveData -RemoveOEM -Confirm:\$false
+Initialize-Disk -Number \$diskNumber -PartitionStyle GPT | Out-Null
+
+\$bootSize = $windowsFat32BootPartitionBytes
+\$boot = New-Partition -DiskNumber \$diskNumber -Size \$bootSize -AssignDriveLetter
+Format-Volume -Partition \$boot -FileSystem FAT32 -NewFileSystemLabel 'WINBOOT' -Confirm:\$false | Out-Null
+\$data = New-Partition -DiskNumber \$diskNumber -UseMaximumSize -AssignDriveLetter
+Format-Volume -Partition \$data -FileSystem NTFS -NewFileSystemLabel '$_volumeLabel' -Confirm:\$false | Out-Null
+@{ Boot = [string]\$boot.DriveLetter; Data = [string]\$data.DriveLetter } | ConvertTo-Json -Compress
+'''
+        : '''
+\$ErrorActionPreference = 'Stop'
+\$diskNumber = $number
+\$disk = Get-Disk -Number \$diskNumber
+$busGuard
 if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
 
 Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
@@ -239,20 +302,63 @@ if (\$disk.Size -gt \$maxFat32) {
   }
 
   @override
-  Future<String> waitForVolumeMount(UsbDisk disk) async {
+  Future<PreparedVolumes> waitForVolumeMount(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  }) async {
     final number = int.parse(disk.id);
     for (var i = 0; i < 40; i++) {
-      final result = await _powershell('''
+      if (layout == DiskLayout.fat32PlusNtfs) {
+        final result = await _powershell('''
+\$ErrorActionPreference = 'Stop'
+Get-Partition -DiskNumber $number | ForEach-Object {
+  \$vol = Get-Volume -Partition \$_ -ErrorAction SilentlyContinue
+  if (-not \$vol -or -not \$_.DriveLetter) { return }
+  [PSCustomObject]@{
+    Letter = [string]\$_.DriveLetter
+    Label = [string]\$vol.FileSystemLabel
+    Fs = [string]\$vol.FileSystem
+  }
+} | ConvertTo-Json -Compress
+''');
+        if (result.success && result.stdout.trim().isNotEmpty) {
+          String? boot;
+          String? data;
+          for (final item in decodeJsonList(result.stdout)) {
+            if (item is! Map) {
+              continue;
+            }
+            final map = Map<String, dynamic>.from(item);
+            final letter = asString(map['Letter']);
+            final label = asString(map['Label']).toUpperCase();
+            if (letter.isEmpty) {
+              continue;
+            }
+            final root = letter.endsWith(':') ? '$letter\\' : '$letter:\\';
+            if (label == 'WINBOOT' && Directory(root).existsSync()) {
+              boot = root;
+            }
+            if (label == _volumeLabel && Directory(root).existsSync()) {
+              data = root;
+            }
+          }
+          if (boot != null && data != null) {
+            return PreparedVolumes(bootMount: boot, dataMount: data);
+          }
+        }
+      } else {
+        final result = await _powershell('''
 \$ErrorActionPreference = 'Stop'
 Get-Partition -DiskNumber $number |
   Where-Object { \$_.DriveLetter } |
   Select-Object -First 1 -ExpandProperty DriveLetter
 ''');
-      final letter = result.stdout.trim();
-      if (result.success && letter.isNotEmpty) {
-        final root = letter.endsWith(':') ? '$letter\\' : '$letter:\\';
-        if (Directory(root).existsSync()) {
-          return root;
+        final letter = result.stdout.trim();
+        if (result.success && letter.isNotEmpty) {
+          final root = letter.endsWith(':') ? '$letter\\' : '$letter:\\';
+          if (Directory(root).existsSync()) {
+            return PreparedVolumes(bootMount: root);
+          }
         }
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
@@ -309,6 +415,127 @@ Get-Partition -DiskNumber ${disk.id} |
     if (!result.success) {
       throw UsbIsoException(
         'DISM split failed: ${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
+      );
+    }
+  }
+
+  @override
+  Future<void> writeRawImage({
+    required UsbDisk disk,
+    required String isoPath,
+    RawWriteProgress? onProgress,
+    CancellationToken? cancellation,
+  }) async {
+    await verifyWritable(disk);
+    cancellation?.throwIfCancelled();
+    final number = int.parse(disk.id);
+    final escapedIso = isoPath.replaceAll("'", "''");
+    final work = Directory.systemTemp.createTempSync('usb_iso_raw_');
+    final progressFile = File(p.join(work.path, 'progress'));
+    final cancelFile = File(p.join(work.path, 'cancel'));
+    final script =
+        '''
+\$ErrorActionPreference = 'Stop'
+\$diskNumber = $number
+\$isoPath = '$escapedIso'
+\$progressPath = '${progressFile.path.replaceAll("'", "''")}'
+\$cancelPath = '${cancelFile.path.replaceAll("'", "''")}'
+\$disk = Get-Disk -Number \$diskNumber
+if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
+
+Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
+  Get-Volume -ErrorAction SilentlyContinue |
+  Dismount-Volume -Force -ErrorAction SilentlyContinue
+
+Clear-Disk -Number \$diskNumber -RemoveData -RemoveOEM -Confirm:\$false
+
+\$src = [IO.File]::OpenRead(\$isoPath)
+\$dst = New-Object IO.FileStream(
+  "\\\\.\\PhysicalDrive\$diskNumber",
+  [IO.FileMode]::Open,
+  [IO.FileAccess]::Write,
+  [IO.FileShare]::None
+)
+try {
+  \$buf = New-Object byte[] (4MB)
+  \$written = 0
+  while ((\$n = \$src.Read(\$buf, 0, \$buf.Length)) -gt 0) {
+    if (Test-Path -LiteralPath \$cancelPath) { exit 75 }
+    \$dst.Write(\$buf, 0, \$n)
+    \$written += \$n
+    Set-Content -LiteralPath \$progressPath -Value \$written
+  }
+  \$dst.Flush()
+} finally {
+  \$dst.Dispose()
+  \$src.Dispose()
+}
+''';
+    try {
+      final file = File(p.join(work.path, 'write.ps1'));
+      await file.writeAsString(script, flush: true);
+      final process = await _runner.start('powershell', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        file.path,
+      ]);
+      process.stdout.drain<void>();
+      final errFuture = process.stderr.transform(utf8.decoder).join();
+      final total = File(isoPath).lengthSync();
+      onProgress?.call(0, total);
+      while (true) {
+        final done = await process.exitCode.timeout(
+          const Duration(milliseconds: 250),
+          onTimeout: () => -1,
+        );
+        if (cancellation?.isCancelled == true && !cancelFile.existsSync()) {
+          cancelFile.writeAsStringSync('1');
+        }
+        if (progressFile.existsSync()) {
+          final last =
+              int.tryParse(progressFile.readAsStringSync().trim()) ?? 0;
+          onProgress?.call(last, total);
+        }
+        if (done != -1) {
+          if (done == 75 || cancellation?.isCancelled == true) {
+            throw WriteCancelledException(
+              'Write cancelled. The USB was erased and may not be bootable.',
+            );
+          }
+          if (done != 0) {
+            final err = await errFuture;
+            throw UsbIsoException(
+              'Raw ISO write failed on disk ${disk.id}: ${err.trim()}',
+            );
+          }
+          onProgress?.call(total, total);
+          return;
+        }
+      }
+    } finally {
+      if (work.existsSync()) {
+        work.deleteSync(recursive: true);
+      }
+    }
+  }
+
+  @override
+  Future<void> flushDisk(UsbDisk disk) async {
+    final result = await _powershell('''
+\$ErrorActionPreference = 'SilentlyContinue'
+Get-Partition -DiskNumber ${disk.id} |
+  Where-Object { \$_.DriveLetter } |
+  ForEach-Object {
+    \$vol = Get-Volume -DriveLetter \$_.DriveLetter
+    if (\$vol) { Write-VolumeCache -DriveLetter \$_.DriveLetter }
+  }
+''');
+    if (!result.success) {
+      throw UsbIsoException(
+        'Failed to flush disk ${disk.id}: ${result.stderr.trim()}',
       );
     }
   }

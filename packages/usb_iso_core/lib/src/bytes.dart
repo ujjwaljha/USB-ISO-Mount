@@ -7,6 +7,9 @@ const int wimSplitSizeMiB = 3800;
 /// Windows `Format-Volume` FAT32 is unreliable above ~32 GB.
 const int windowsFat32PartitionMaxBytes = 30 * 1024 * 1024 * 1024;
 
+/// FAT32 boot partition for dual-layout Windows USBs (fits `boot.wim` + EFI).
+const int windowsFat32BootPartitionBytes = 3584 * 1024 * 1024;
+
 String formatBytes(int bytes) {
   if (bytes < 1024) {
     return '$bytes B';

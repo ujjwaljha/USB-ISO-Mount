@@ -1,5 +1,5 @@
 name: usb_iso_mount
-description: Create Windows 10/11 bootable USB drives on macOS and Windows.
+description: Create bootable USB drives from Windows or Linux ISOs.
 publish_to: none
 version: 0.1.0+1
 

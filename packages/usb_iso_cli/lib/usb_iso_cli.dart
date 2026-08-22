@@ -7,7 +7,7 @@ Future<int> run(List<String> arguments) async {
   final runner =
       CommandRunner<int>(
           'usb_iso',
-          'Mount Windows ISOs and create UEFI-bootable USB installer drives.',
+          'Mount ISOs and create bootable USB drives (Windows, WinPE, Linux).',
         )
         ..addCommand(ListCommand())
         ..addCommand(MountCommand())
@@ -30,6 +30,14 @@ Future<int> run(List<String> arguments) async {
 }
 
 class ListCommand extends Command<int> {
+  ListCommand() {
+    argParser.addFlag(
+      'advanced',
+      help: 'Include SD and Thunderbolt drives.',
+      negatable: false,
+    );
+  }
+
   @override
   String get name => 'list';
 
@@ -38,7 +46,10 @@ class ListCommand extends Command<int> {
 
   @override
   Future<int> run() async {
-    final disks = await DiskEnumerator().listRemovableUsb();
+    final advanced = argResults?['advanced'] as bool? ?? false;
+    final disks = await DiskEnumerator().listRemovableUsb(
+      includeAdvanced: advanced,
+    );
     if (disks.isEmpty) {
       stdout.writeln('No removable USB drives found.');
       return 0;
@@ -57,24 +68,24 @@ class ListCommand extends Command<int> {
 
 class MountCommand extends Command<int> {
   MountCommand() {
-    argParser.addOption('iso', abbr: 'i', help: 'Path to a Windows ISO.');
+    argParser.addOption('iso', abbr: 'i', help: 'Path to an ISO image.');
   }
 
   @override
   String get name => 'mount';
 
   @override
-  String get description => 'Mount a Windows ISO without writing a USB.';
+  String get description => 'Mount an ISO without writing a USB.';
 
   @override
   Future<int> run() async {
     final iso = _requireIso();
     final mount = await IsoMounter().mount(iso);
-    final info = WindowsIsoValidator().inspectMounted(mount.mountPath);
+    final profile = IsoInspector().inspectMounted(mount.mountPath);
     stdout.writeln('Mounted at ${mount.mountPath}');
-    stdout.writeln(info.summary);
-    if (!info.isValid) {
-      stderr.writeln('Warning: this does not look like a Windows 10/11 ISO.');
+    stdout.writeln(profile.summary);
+    if (profile.kind == IsoKind.unknown) {
+      stderr.writeln(profile.unsupportedMessage);
       return 2;
     }
     return 0;
@@ -98,7 +109,7 @@ class UnmountCommand extends Command<int> {
   String get name => 'unmount';
 
   @override
-  String get description => 'Unmount a previously mounted Windows ISO.';
+  String get description => 'Unmount a previously mounted ISO.';
 
   @override
   Future<int> run() async {
@@ -115,11 +126,11 @@ class UnmountCommand extends Command<int> {
 class MakeCommand extends Command<int> {
   MakeCommand() {
     argParser
-      ..addOption('iso', abbr: 'i', help: 'Path to a Windows 10/11 ISO.')
+      ..addOption('iso', abbr: 'i', help: 'Path to a Windows or Linux ISO.')
       ..addOption(
         'disk',
         abbr: 'd',
-        help: 'Whole-disk id from `usb_iso list` (disk4 or 1).',
+        help: 'Whole-disk id from `usb_iso list` (disk4, 1, or sda).',
       )
       ..addFlag(
         'yes',
@@ -131,6 +142,11 @@ class MakeCommand extends Command<int> {
         'dry-run',
         help: 'Validate the ISO and target without writing.',
         negatable: false,
+      )
+      ..addFlag(
+        'advanced',
+        help: 'Allow SD or Thunderbolt targets listed with `list --advanced`.',
+        negatable: false,
       );
   }
 
@@ -139,7 +155,7 @@ class MakeCommand extends Command<int> {
 
   @override
   String get description =>
-      'Erase a USB drive and write a UEFI-bootable Windows installer.';
+      'Erase a USB drive and write a bootable Windows or Linux image.';
 
   @override
   Future<int> run() async {
@@ -147,6 +163,7 @@ class MakeCommand extends Command<int> {
     final diskArg = argResults?['disk'] as String?;
     final yes = argResults?['yes'] as bool? ?? false;
     final dryRun = argResults?['dry-run'] as bool? ?? false;
+    final advanced = argResults?['advanced'] as bool? ?? false;
 
     if (iso == null || iso.isEmpty) {
       throw UsageException('Missing --iso', usage);
@@ -156,7 +173,9 @@ class MakeCommand extends Command<int> {
     }
 
     final id = DiskId.normalize(diskArg);
-    final disks = await DiskEnumerator().listRemovableUsb();
+    final disks = await DiskEnumerator().listRemovableUsb(
+      includeAdvanced: advanced,
+    );
     UsbDisk? disk;
     for (final candidate in disks) {
       if (candidate.id == id) {
@@ -180,7 +199,13 @@ class MakeCommand extends Command<int> {
 
     stdout.writeln('Target: ${disk.label}');
     await for (final progress in BootableWriter().write(
-      WriteRequest(isoPath: iso, disk: disk, confirmed: true, dryRun: dryRun),
+      WriteRequest(
+        isoPath: iso,
+        disk: disk,
+        confirmed: true,
+        dryRun: dryRun,
+        allowAdvancedTargets: advanced,
+      ),
     )) {
       final percent = progress.percent == null
           ? ''

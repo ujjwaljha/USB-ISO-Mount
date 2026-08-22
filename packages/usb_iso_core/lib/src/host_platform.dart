@@ -1,20 +1,33 @@
+import 'cancellation.dart';
+import 'disk_layout.dart';
 import 'models/iso_mount.dart';
 import 'models/usb_disk.dart';
 
+typedef RawWriteProgress = void Function(int writtenBytes, int totalBytes);
+
 /// OS-specific disk, ISO, and format operations.
 abstract class HostPlatform {
-  Future<List<UsbDisk>> listUsbDisks();
+  Future<List<UsbDisk>> listUsbDisks({bool includeAdvanced = false});
 
   Future<IsoMount> mountIso(String isoPath);
 
   Future<void> unmountIso(IsoMount mount);
 
   /// Re-query the live disk and throw if it is no longer a safe USB target.
-  Future<void> verifyWritable(UsbDisk disk);
+  Future<void> verifyWritable(
+    UsbDisk disk, {
+    bool allowAdvancedTargets = false,
+  });
 
-  Future<void> eraseAndFormat(UsbDisk disk);
+  Future<void> eraseAndFormat(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  });
 
-  Future<String> waitForVolumeMount(UsbDisk disk);
+  Future<PreparedVolumes> waitForVolumeMount(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  });
 
   Future<void> eject(UsbDisk disk);
 
@@ -25,4 +38,13 @@ abstract class HostPlatform {
     required String destinationSwm,
     required String toolPath,
   });
+
+  Future<void> writeRawImage({
+    required UsbDisk disk,
+    required String isoPath,
+    RawWriteProgress? onProgress,
+    CancellationToken? cancellation,
+  });
+
+  Future<void> flushDisk(UsbDisk disk);
 }

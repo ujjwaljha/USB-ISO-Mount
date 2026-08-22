@@ -10,5 +10,7 @@ class DiskEnumerator {
   final HostPlatform _host;
 
   /// Removable USB whole disks only. Internal and virtual disks are omitted.
-  Future<List<UsbDisk>> listRemovableUsb() => _host.listUsbDisks();
+  Future<List<UsbDisk>> listRemovableUsb({bool includeAdvanced = false}) {
+    return _host.listUsbDisks(includeAdvanced: includeAdvanced);
+  }
 }

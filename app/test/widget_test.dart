@@ -7,8 +7,9 @@ void main() {
     await tester.pumpWidget(
       UsbIsoApp(listDisks: () async => const <UsbDisk>[]),
     );
-    expect(find.text('USB ISO Mount'), findsOneWidget);
-    expect(find.text('Make bootable USB'), findsOneWidget);
     await tester.pumpAndSettle();
+    expect(find.text('USB ISO Mount'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Make bootable USB'), 200);
+    expect(find.text('Make bootable USB'), findsOneWidget);
   });
 }

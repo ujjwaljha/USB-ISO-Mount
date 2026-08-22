@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../bytes.dart';
+import '../cancellation.dart';
+import '../disk_layout.dart';
 import '../exceptions.dart';
 import '../host_platform.dart';
 import '../json_util.dart';
@@ -18,6 +20,7 @@ UsbDisk? usbDiskFromMacosInfo(
   Map<String, dynamic> info, {
   required String bootWholeDisk,
   List<String> mountPoints = const [],
+  bool includeAdvanced = false,
 }) {
   final id = asString(info['DeviceIdentifier']);
   if (id.isEmpty) {
@@ -46,13 +49,13 @@ UsbDisk? usbDiskFromMacosInfo(
     mountPoints: mountPoints,
   );
 
-  if (!disk.isSafeTarget) {
-    return null;
+  if (disk.isSafeTarget) {
+    return disk;
   }
-  if (bus.toUpperCase() != 'USB') {
-    return null;
+  if (includeAdvanced && disk.isAdvancedTarget) {
+    return disk;
   }
-  return disk;
+  return null;
 }
 
 String _macosName(Map<String, dynamic> info) {
@@ -105,7 +108,7 @@ class MacosHost implements HostPlatform {
   }
 
   @override
-  Future<List<UsbDisk>> listUsbDisks() async {
+  Future<List<UsbDisk>> listUsbDisks({bool includeAdvanced = false}) async {
     final listPlist = await _runner.run('diskutil', [
       'list',
       '-plist',
@@ -140,6 +143,7 @@ class MacosHost implements HostPlatform {
           info,
           bootWholeDisk: bootWhole,
           mountPoints: mounts,
+          includeAdvanced: includeAdvanced,
         );
         if (disk != null) {
           disks.add(disk);
@@ -303,7 +307,10 @@ class MacosHost implements HostPlatform {
   }
 
   @override
-  Future<void> verifyWritable(UsbDisk disk) async {
+  Future<void> verifyWritable(
+    UsbDisk disk, {
+    bool allowAdvancedTargets = false,
+  }) async {
     var bootWhole = '';
     try {
       final boot = await _infoJson('/');
@@ -316,7 +323,11 @@ class MacosHost implements HostPlatform {
     }
 
     final info = await _infoJson(disk.id);
-    final current = usbDiskFromMacosInfo(info, bootWholeDisk: bootWhole);
+    final current = usbDiskFromMacosInfo(
+      info,
+      bootWholeDisk: bootWhole,
+      includeAdvanced: allowAdvancedTargets,
+    );
     if (current == null || current.id != disk.id) {
       throw UnsafeDiskException(
         'Refusing to erase ${disk.id}: it is no longer a removable USB drive.',
@@ -325,8 +336,17 @@ class MacosHost implements HostPlatform {
   }
 
   @override
-  Future<void> eraseAndFormat(UsbDisk disk) async {
+  Future<void> eraseAndFormat(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  }) async {
     await verifyWritable(disk);
+    if (layout == DiskLayout.fat32PlusNtfs) {
+      throw UsbIsoException(
+        'FAT32+NTFS dual partition is not available on macOS. '
+        'The oversized installer image will be split for FAT32 instead.',
+      );
+    }
     final result = await _runner.run('diskutil', [
       'eraseDisk',
       'FAT32',
@@ -342,7 +362,10 @@ class MacosHost implements HostPlatform {
   }
 
   @override
-  Future<String> waitForVolumeMount(UsbDisk disk) async {
+  Future<PreparedVolumes> waitForVolumeMount(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  }) async {
     for (var i = 0; i < 40; i++) {
       final volumes = Directory('/Volumes');
       if (volumes.existsSync()) {
@@ -357,7 +380,7 @@ class MacosHost implements HostPlatform {
           try {
             final info = await _infoJson(entry.path);
             if (asString(info['ParentWholeDisk']) == disk.id) {
-              return entry.path;
+              return PreparedVolumes(bootMount: entry.path);
             }
           } on UsbIsoException {
             continue;
@@ -409,19 +432,146 @@ class MacosHost implements HostPlatform {
     required String destinationSwm,
     required String toolPath,
   }) async {
-    final result = await _runner.run(toolPath, [
-      'split',
-      sourceWim,
-      destinationSwm,
-      '$wimSplitSizeMiB',
-    ]);
+    var source = sourceWim;
+    Directory? temp;
+    if (sourceWim.toLowerCase().endsWith('.esd')) {
+      temp = Directory.systemTemp.createTempSync('usb_iso_esd_');
+      final converted = p.join(temp.path, 'install.wim');
+      final export = await _runner.run(toolPath, [
+        'export',
+        sourceWim,
+        'all',
+        converted,
+      ]);
+      if (!export.success) {
+        temp.deleteSync(recursive: true);
+        throw UsbIsoException(
+          'wimlib ESD export failed: ${export.stderr.trim().isEmpty ? export.stdout.trim() : export.stderr.trim()}',
+        );
+      }
+      source = converted;
+    }
+    try {
+      final result = await _runner.run(toolPath, [
+        'split',
+        source,
+        destinationSwm,
+        '$wimSplitSizeMiB',
+      ]);
+      if (!result.success) {
+        throw UsbIsoException(
+          'wimlib split failed: ${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
+        );
+      }
+    } finally {
+      if (temp != null && temp.existsSync()) {
+        temp.deleteSync(recursive: true);
+      }
+    }
+  }
+
+  @override
+  Future<void> writeRawImage({
+    required UsbDisk disk,
+    required String isoPath,
+    RawWriteProgress? onProgress,
+    CancellationToken? cancellation,
+  }) async {
+    await verifyWritable(disk);
+    cancellation?.throwIfCancelled();
+    final unmount = await _runner.run('diskutil', ['unmountDisk', disk.id]);
+    if (!unmount.success) {
+      throw UsbIsoException(
+        'Could not unmount ${disk.id} for raw write: ${unmount.stderr.trim()}',
+      );
+    }
+
+    final rdisk = disk.devicePath.replaceFirst('/dev/disk', '/dev/rdisk');
+    final work = Directory.systemTemp.createTempSync('usb_iso_raw_');
+    final progressFile = File(p.join(work.path, 'progress'));
+    final cancelFile = File(p.join(work.path, 'cancel'));
+    final script = File(p.join(work.path, 'write.pl'));
+    await script.writeAsString(_rawWritePerl);
+
+    try {
+      final process = await _runner.start('perl', [
+        script.path,
+        isoPath,
+        rdisk,
+        progressFile.path,
+        cancelFile.path,
+      ], elevated: true);
+      process.stdout.drain<void>();
+      final errFuture = process.stderr.transform(utf8.decoder).join();
+
+      final total = File(isoPath).lengthSync();
+      onProgress?.call(0, total);
+      var last = 0;
+      while (true) {
+        final done = await process.exitCode.timeout(
+          const Duration(milliseconds: 250),
+          onTimeout: () => -1,
+        );
+        if (cancellation?.isCancelled == true && !cancelFile.existsSync()) {
+          cancelFile.writeAsStringSync('1');
+        }
+        if (progressFile.existsSync()) {
+          last = int.tryParse(progressFile.readAsStringSync().trim()) ?? last;
+          onProgress?.call(last, total);
+        }
+        if (done != -1) {
+          if (done == 75 || cancellation?.isCancelled == true) {
+            throw WriteCancelledException(
+              'Write cancelled. The USB was erased and may not be bootable.',
+            );
+          }
+          if (done != 0) {
+            final err = await errFuture;
+            throw UsbIsoException(
+              'Raw ISO write failed on ${disk.id}: ${err.trim()}',
+            );
+          }
+          onProgress?.call(total, total);
+          return;
+        }
+      }
+    } finally {
+      if (work.existsSync()) {
+        work.deleteSync(recursive: true);
+      }
+    }
+  }
+
+  @override
+  Future<void> flushDisk(UsbDisk disk) async {
+    final result = await _runner.run('sync', const []);
     if (!result.success) {
       throw UsbIsoException(
-        'wimlib split failed: ${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
+        'Failed to flush ${disk.id}: ${result.stderr.trim()}',
       );
     }
   }
 }
+
+const _rawWritePerl = r'''
+use strict;
+use warnings;
+my ($src, $dst, $prog, $cancel) = @ARGV;
+open my $in, '<:raw', $src or die "open src: $!";
+open my $out, '>:raw', $dst or die "open dst: $!";
+my $written = 0;
+my $buf;
+while (1) {
+  if (-e $cancel) { exit 75; }
+  my $n = read($in, $buf, 4 * 1024 * 1024);
+  last if !defined $n || $n == 0;
+  print $out $buf;
+  $written += $n;
+  if (open my $p, '>', $prog) { print $p $written; close $p; }
+}
+close $out;
+close $in;
+''';
 
 class _HdiutilAttach {
   const _HdiutilAttach({this.mountPath, this.deviceNode});

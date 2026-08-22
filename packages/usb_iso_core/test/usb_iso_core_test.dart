@@ -55,6 +55,16 @@ void main() {
         throwsA(isA<UnsafeDiskException>()),
       );
     });
+
+    test('accepts SD when advanced targets are allowed', () {
+      expect(
+        () => Safety.ensureWritable(
+          _usb(bus: 'Secure Digital', removable: true, isInternal: false),
+          allowAdvancedTargets: true,
+        ),
+        returnsNormally,
+      );
+    });
   });
 
   group('DiskId.normalize', () {
@@ -81,6 +91,18 @@ void main() {
         '2',
       );
       expect(DiskId.normalize('Disk 3', operatingSystem: 'windows'), '3');
+    });
+
+    test('accepts Linux whole disks and rejects partitions', () {
+      expect(DiskId.normalize('sda', operatingSystem: 'linux'), 'sda');
+      expect(
+        DiskId.normalize('/dev/nvme0n1', operatingSystem: 'linux'),
+        'nvme0n1',
+      );
+      expect(
+        () => DiskId.normalize('sda1', operatingSystem: 'linux'),
+        throwsA(isA<UsbIsoException>()),
+      );
     });
   });
 
@@ -131,6 +153,32 @@ void main() {
       );
     });
 
+    test('accepts ARM EFI plus install.wim', () {
+      Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'),
+      ).writeAsBytesSync([1]);
+      Directory(p.join(temp.path, 'sources')).createSync();
+      File(p.join(temp.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
+      final info = WindowsIsoValidator().inspectMounted(temp.path);
+      expect(info.isValid, isTrue);
+      expect(info.hasEfiBoot, isTrue);
+    });
+
+    test('accepts WinPE boot.wim', () {
+      Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
+      ).writeAsBytesSync([1]);
+      Directory(p.join(temp.path, 'sources')).createSync();
+      File(
+        p.join(temp.path, 'sources', 'boot.wim'),
+      ).writeAsBytesSync([1, 2, 3]);
+      final info = WindowsIsoValidator().inspectMounted(temp.path);
+      expect(info.installKind, WindowsInstallImageKind.bootWim);
+      expect(() => WindowsIsoValidator().ensureValid(info), returnsNormally);
+    });
+
     test('detects ESD images', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
       File(
@@ -148,7 +196,7 @@ void main() {
   });
 
   group('WindowsIsoInfo.needsSplit', () {
-    test('is true only for oversized WIM files', () {
+    test('is true for oversized WIM and ESD files', () {
       const small = WindowsIsoInfo(
         mountPath: '/mnt',
         hasEfiBoot: true,
@@ -172,7 +220,7 @@ void main() {
       );
       expect(small.needsSplit, isFalse);
       expect(huge.needsSplit, isTrue);
-      expect(hugeEsd.needsSplit, isFalse);
+      expect(hugeEsd.needsSplit, isTrue);
     });
   });
 
@@ -486,6 +534,43 @@ image-type      : read/write
       expect(host.eraseCalls, 0);
     });
 
+    test('cancels before erase', () async {
+      final token = CancellationToken()..cancel();
+      expect(
+        () => BootableWriter(host: host)
+            .write(
+              WriteRequest(
+                isoPath: iso.path,
+                disk: _usb(),
+                confirmed: true,
+                cancellation: token,
+              ),
+            )
+            .toList(),
+        throwsA(isA<WriteCancelledException>()),
+      );
+      expect(host.eraseCalls, 0);
+    });
+
+    test('raw-writes a Linux live ISO', () async {
+      final linuxRoot = Directory('${temp.path}_linux')..createSync();
+      addTearDown(() {
+        if (linuxRoot.existsSync()) {
+          linuxRoot.deleteSync(recursive: true);
+        }
+      });
+      _writeLinuxLayout(linuxRoot);
+      final linuxHost = FakeHost(
+        mount: IsoMount(isoPath: iso.path, mountPath: linuxRoot.path),
+      );
+      final events = await BootableWriter(host: linuxHost)
+          .write(WriteRequest(isoPath: iso.path, disk: _usb(), confirmed: true))
+          .toList();
+      expect(linuxHost.rawWriteCalls, 1);
+      expect(linuxHost.eraseCalls, 0);
+      expect(events.last.step, WriteStep.done);
+    });
+
     test('treats eject failure as a warning', () async {
       final dest = Directory('${temp.path}_dest')..createSync();
       addTearDown(() {
@@ -504,6 +589,230 @@ image-type      : read/write
       expect(events.last.message, contains('eject failed'));
     });
   });
+
+  group('IsoInspector', () {
+    late Directory temp;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('usb_iso_inspect_');
+    });
+
+    tearDown(() {
+      if (temp.existsSync()) {
+        temp.deleteSync(recursive: true);
+      }
+    });
+
+    test('classifies Windows x64, ARM, WinPE, Linux, and unknown', () {
+      _writeWindowsLayout(temp, wimBytes: 8);
+      expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsX64);
+
+      temp.deleteSync(recursive: true);
+      temp.createSync();
+      Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'),
+      ).writeAsBytesSync([1]);
+      Directory(p.join(temp.path, 'sources')).createSync();
+      File(p.join(temp.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
+      expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsArm);
+
+      temp.deleteSync(recursive: true);
+      temp.createSync();
+      Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
+      ).writeAsBytesSync([1]);
+      Directory(p.join(temp.path, 'sources')).createSync();
+      File(p.join(temp.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+      expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsPe);
+
+      temp.deleteSync(recursive: true);
+      temp.createSync();
+      _writeLinuxLayout(temp);
+      expect(
+        IsoInspector().inspectMounted(temp.path).kind,
+        IsoKind.linuxHybrid,
+      );
+
+      temp.deleteSync(recursive: true);
+      temp.createSync();
+      File(p.join(temp.path, 'readme.txt')).writeAsStringSync('nope');
+      expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.unknown);
+    });
+  });
+
+  group('LayoutChooser', () {
+    IsoProfile profile(IsoKind kind, {int installSize = 1024}) {
+      return IsoProfile(
+        mountPath: '/mnt',
+        kind: kind,
+        hasX64Efi: kind != IsoKind.windowsArm && kind != IsoKind.unknown,
+        hasArmEfi: kind == IsoKind.windowsArm,
+        installKind: kind == IsoKind.windowsPe
+            ? WindowsInstallImageKind.bootWim
+            : kind == IsoKind.linuxHybrid || kind == IsoKind.unknown
+            ? WindowsInstallImageKind.none
+            : WindowsInstallImageKind.wim,
+        installImagePath: kind == IsoKind.linuxHybrid || kind == IsoKind.unknown
+            ? null
+            : '/mnt/sources/install.wim',
+        installImageSize: installSize,
+      );
+    }
+
+    test('routes Linux to raw write and unknown to unsupported', () {
+      expect(
+        LayoutChooser.strategyFor(
+          profile: profile(IsoKind.linuxHybrid),
+          windowsHost: false,
+          diskSizeBytes: 16 * 1024 * 1024 * 1024,
+        ),
+        WriteStrategy.rawHybrid,
+      );
+      expect(
+        LayoutChooser.strategyFor(
+          profile: profile(IsoKind.unknown),
+          windowsHost: true,
+          diskSizeBytes: 16 * 1024 * 1024 * 1024,
+        ),
+        WriteStrategy.unsupported,
+      );
+    });
+
+    test('uses dual partition on Windows for oversized images', () {
+      expect(
+        LayoutChooser.strategyFor(
+          profile: profile(
+            IsoKind.windowsX64,
+            installSize: fat32MaxFileBytes + 1,
+          ),
+          windowsHost: true,
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+        ),
+        WriteStrategy.windowsDualPartition,
+      );
+      expect(
+        LayoutChooser.strategyFor(
+          profile: profile(
+            IsoKind.windowsX64,
+            installSize: fat32MaxFileBytes + 1,
+          ),
+          windowsHost: false,
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+        ),
+        WriteStrategy.windowsFileCopy,
+      );
+    });
+
+    test('uses dual partition for any oversized FAT32 file on Windows', () {
+      expect(
+        LayoutChooser.strategyFor(
+          profile: IsoProfile(
+            mountPath: '/mnt',
+            kind: IsoKind.windowsX64,
+            hasX64Efi: true,
+            hasArmEfi: false,
+            installKind: WindowsInstallImageKind.wim,
+            installImagePath: '/mnt/sources/install.wim',
+            installImageSize: 1024,
+            hasOversizedFat32File: true,
+          ),
+          windowsHost: true,
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+        ),
+        WriteStrategy.windowsDualPartition,
+      );
+    });
+
+    test('describes FAT32+NTFS vs split layouts', () {
+      final huge = profile(
+        IsoKind.windowsX64,
+        installSize: fat32MaxFileBytes + 1,
+      );
+      expect(
+        huge.layoutSummary(WriteStrategy.windowsDualPartition),
+        'Layout: FAT32+NTFS',
+      );
+      expect(
+        huge.layoutSummary(WriteStrategy.windowsFileCopy),
+        'Layout: FAT32, will split WIM',
+      );
+    });
+
+    test('raw-writes generic UEFI when the ISO looks hybrid', () {
+      expect(
+        LayoutChooser.strategyFor(
+          profile: profile(IsoKind.genericUefi),
+          windowsHost: false,
+          diskSizeBytes: 8 * 1024 * 1024 * 1024,
+          isoLooksHybrid: true,
+        ),
+        WriteStrategy.rawHybrid,
+      );
+    });
+  });
+
+  group('usbDiskFromLinuxInfo', () {
+    test('keeps a USB disk and drops the boot disk', () {
+      final usb = usbDiskFromLinuxInfo({
+        'name': 'sdb',
+        'path': '/dev/sdb',
+        'tran': 'usb',
+        'type': 'disk',
+        'size': 16000000000,
+        'rm': true,
+        'model': 'SanDisk',
+        'mountpoint': '',
+      }, bootName: 'sda');
+      expect(usb, isNotNull);
+      expect(usb!.id, 'sdb');
+      expect(usb.isSafeTarget, isTrue);
+
+      expect(
+        usbDiskFromLinuxInfo({
+          'name': 'sda',
+          'tran': 'sata',
+          'type': 'disk',
+          'size': 512000000000,
+          'rm': false,
+          'model': 'NVMe',
+        }, bootName: 'sda'),
+        isNull,
+      );
+    });
+
+    test('finds the boot disk from a root mount', () {
+      expect(
+        linuxBootDiskName([
+          {
+            'name': 'sda',
+            'children': [
+              {'name': 'sda1', 'mountpoint': '/'},
+            ],
+          },
+        ]),
+        'sda',
+      );
+    });
+  });
+
+  group('isoLooksLikeHybridDisk', () {
+    test('reads the MBR signature', () {
+      final file = File(
+        '${Directory.systemTemp.createTempSync('usb_iso_mbr_').path}/disk.iso',
+      );
+      final bytes = List<int>.filled(512, 0);
+      bytes[510] = 0x55;
+      bytes[511] = 0xAA;
+      file.writeAsBytesSync(bytes);
+      addTearDown(() => file.parent.deleteSync(recursive: true));
+      expect(isoLooksLikeHybridDisk(file.path), isTrue);
+      bytes[511] = 0x00;
+      file.writeAsBytesSync(bytes);
+      expect(isoLooksLikeHybridDisk(file.path), isFalse);
+    });
+  });
 }
 
 class FakeHost implements HostPlatform {
@@ -513,14 +822,19 @@ class FakeHost implements HostPlatform {
   int mountCalls = 0;
   int unmountCalls = 0;
   int eraseCalls = 0;
+  int rawWriteCalls = 0;
   Directory? destination;
   String? ejectError;
 
   @override
-  Future<List<UsbDisk>> listUsbDisks() async => const [];
+  Future<List<UsbDisk>> listUsbDisks({bool includeAdvanced = false}) async =>
+      const [];
 
   @override
-  Future<void> verifyWritable(UsbDisk disk) async {}
+  Future<void> verifyWritable(
+    UsbDisk disk, {
+    bool allowAdvancedTargets = false,
+  }) async {}
 
   @override
   Future<IsoMount> mountIso(String isoPath) async {
@@ -534,15 +848,25 @@ class FakeHost implements HostPlatform {
   }
 
   @override
-  Future<void> eraseAndFormat(UsbDisk disk) async {
+  Future<void> eraseAndFormat(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  }) async {
     eraseCalls++;
   }
 
   @override
-  Future<String> waitForVolumeMount(UsbDisk disk) async {
+  Future<PreparedVolumes> waitForVolumeMount(
+    UsbDisk disk, {
+    DiskLayout layout = DiskLayout.fat32,
+  }) async {
     final dir = destination ?? Directory.systemTemp.createTempSync('usb_dest_');
     dir.createSync(recursive: true);
-    return dir.path;
+    Directory? data;
+    if (layout == DiskLayout.fat32PlusNtfs) {
+      data = Directory('${dir.path}_data')..createSync(recursive: true);
+    }
+    return PreparedVolumes(bootMount: dir.path, dataMount: data?.path);
   }
 
   @override
@@ -561,6 +885,22 @@ class FakeHost implements HostPlatform {
     required String destinationSwm,
     required String toolPath,
   }) async {}
+
+  @override
+  Future<void> writeRawImage({
+    required UsbDisk disk,
+    required String isoPath,
+    RawWriteProgress? onProgress,
+    CancellationToken? cancellation,
+  }) async {
+    rawWriteCalls++;
+    final total = File(isoPath).lengthSync();
+    onProgress?.call(total, total);
+    cancellation?.throwIfCancelled(diskAlreadyErased: true);
+  }
+
+  @override
+  Future<void> flushDisk(UsbDisk disk) async {}
 }
 
 UsbDisk _usb({
@@ -590,4 +930,11 @@ void _writeWindowsLayout(Directory root, {required int wimBytes}) {
   File(
     p.join(root.path, 'sources', 'install.wim'),
   ).writeAsBytesSync(List<int>.filled(wimBytes, 7));
+}
+
+void _writeLinuxLayout(Directory root) {
+  Directory(p.join(root.path, 'efi', 'boot')).createSync(recursive: true);
+  File(p.join(root.path, 'efi', 'boot', 'bootx64.efi')).writeAsBytesSync([1]);
+  Directory(p.join(root.path, 'casper')).createSync();
+  File(p.join(root.path, 'casper', 'vmlinuz')).writeAsBytesSync([1, 2, 3]);
 }

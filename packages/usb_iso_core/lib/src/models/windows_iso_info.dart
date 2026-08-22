@@ -1,6 +1,6 @@
 import '../bytes.dart';
 
-enum WindowsInstallImageKind { wim, esd, none }
+enum WindowsInstallImageKind { wim, esd, bootWim, none }
 
 /// Result of inspecting a mounted Windows installer ISO.
 class WindowsIsoInfo {
@@ -24,13 +24,17 @@ class WindowsIsoInfo {
       installImagePath != null;
 
   bool get needsSplit =>
-      installKind == WindowsInstallImageKind.wim &&
+      (installKind == WindowsInstallImageKind.wim ||
+          installKind == WindowsInstallImageKind.esd) &&
       installImageSize > fat32MaxFileBytes;
 
   String get summary {
-    final image = installKind == WindowsInstallImageKind.none
-        ? 'missing install.wim/esd'
-        : '${installKind.name.toUpperCase()} ${formatBytes(installImageSize)}';
+    final image = switch (installKind) {
+      WindowsInstallImageKind.none => 'missing install.wim/esd',
+      WindowsInstallImageKind.bootWim =>
+        'WinPE boot.wim ${formatBytes(installImageSize)}',
+      _ => '${installKind.name.toUpperCase()} ${formatBytes(installImageSize)}',
+    };
     final efi = hasEfiBoot ? 'UEFI boot files present' : 'no EFI boot files';
     final split = needsSplit
         ? 'will split WIM for FAT32'
