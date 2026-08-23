@@ -11,9 +11,69 @@ import '../host_platform.dart';
 import '../json_util.dart';
 import '../models/iso_mount.dart';
 import '../models/usb_disk.dart';
+import '../privilege.dart';
 import '../process_runner.dart';
 
 const _volumeLabel = 'WINSETUP';
+
+/// PowerShell that takes the disk offline, streams the ISO, then onlines it.
+String windowsRawWritePowerShell({
+  required int diskNumber,
+  required String isoPath,
+  required String progressPath,
+  required String cancelPath,
+}) {
+  final escapedIso = isoPath.replaceAll("'", "''");
+  final escapedProgress = progressPath.replaceAll("'", "''");
+  final escapedCancel = cancelPath.replaceAll("'", "''");
+  return '''
+\$ErrorActionPreference = 'Stop'
+\$diskNumber = $diskNumber
+\$isoPath = '$escapedIso'
+\$progressPath = '$escapedProgress'
+\$cancelPath = '$escapedCancel'
+\$disk = Get-Disk -Number \$diskNumber
+if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
+
+Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
+  Get-Volume -ErrorAction SilentlyContinue |
+  Dismount-Volume -Force -ErrorAction SilentlyContinue
+
+Clear-Disk -Number \$diskNumber -RemoveData -RemoveOEM -Confirm:\$false
+
+try {
+  Set-Disk -Number \$diskNumber -IsReadOnly \$false -ErrorAction SilentlyContinue
+  Set-Disk -Number \$diskNumber -IsOffline \$true
+} catch {
+  # Some USB controllers reject offline; volumes are already dismounted.
+}
+
+\$src = \$null
+\$dst = \$null
+try {
+  \$src = [IO.File]::OpenRead(\$isoPath)
+  \$dst = New-Object IO.FileStream(
+    "\\\\.\\PhysicalDrive\$diskNumber",
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None
+  )
+  \$buf = New-Object byte[] (8MB)
+  \$written = 0
+  while ((\$n = \$src.Read(\$buf, 0, \$buf.Length)) -gt 0) {
+    if (Test-Path -LiteralPath \$cancelPath) { exit 75 }
+    \$dst.Write(\$buf, 0, \$n)
+    \$written += \$n
+    Set-Content -LiteralPath \$progressPath -Value \$written
+  }
+  \$dst.Flush()
+} finally {
+  if (\$dst) { \$dst.Dispose() }
+  if (\$src) { \$src.Dispose() }
+  try { Set-Disk -Number \$diskNumber -IsOffline \$false } catch {}
+}
+''';
+}
 
 bool isAdvancedWindowsBus(String bus) {
   final value = bus.toUpperCase();
@@ -245,6 +305,7 @@ foreach (\$vol in @(\$vols)) {
     UsbDisk disk, {
     DiskLayout layout = DiskLayout.fat32,
   }) async {
+    await WindowsPrivilege.ensureAdministrator(runner: _runner);
     await verifyWritable(disk);
     final number = int.parse(disk.id);
     final busGuard = _busGuard(disk.isAdvancedTarget);
@@ -426,51 +487,19 @@ Get-Partition -DiskNumber ${disk.id} |
     RawWriteProgress? onProgress,
     CancellationToken? cancellation,
   }) async {
+    await WindowsPrivilege.ensureAdministrator(runner: _runner);
     await verifyWritable(disk);
     cancellation?.throwIfCancelled();
     final number = int.parse(disk.id);
-    final escapedIso = isoPath.replaceAll("'", "''");
     final work = Directory.systemTemp.createTempSync('usb_iso_raw_');
     final progressFile = File(p.join(work.path, 'progress'));
     final cancelFile = File(p.join(work.path, 'cancel'));
-    final script =
-        '''
-\$ErrorActionPreference = 'Stop'
-\$diskNumber = $number
-\$isoPath = '$escapedIso'
-\$progressPath = '${progressFile.path.replaceAll("'", "''")}'
-\$cancelPath = '${cancelFile.path.replaceAll("'", "''")}'
-\$disk = Get-Disk -Number \$diskNumber
-if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
-
-Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
-  Get-Volume -ErrorAction SilentlyContinue |
-  Dismount-Volume -Force -ErrorAction SilentlyContinue
-
-Clear-Disk -Number \$diskNumber -RemoveData -RemoveOEM -Confirm:\$false
-
-\$src = [IO.File]::OpenRead(\$isoPath)
-\$dst = New-Object IO.FileStream(
-  "\\\\.\\PhysicalDrive\$diskNumber",
-  [IO.FileMode]::Open,
-  [IO.FileAccess]::Write,
-  [IO.FileShare]::None
-)
-try {
-  \$buf = New-Object byte[] (4MB)
-  \$written = 0
-  while ((\$n = \$src.Read(\$buf, 0, \$buf.Length)) -gt 0) {
-    if (Test-Path -LiteralPath \$cancelPath) { exit 75 }
-    \$dst.Write(\$buf, 0, \$n)
-    \$written += \$n
-    Set-Content -LiteralPath \$progressPath -Value \$written
-  }
-  \$dst.Flush()
-} finally {
-  \$dst.Dispose()
-  \$src.Dispose()
-}
-''';
+    final script = windowsRawWritePowerShell(
+      diskNumber: number,
+      isoPath: isoPath,
+      progressPath: progressFile.path,
+      cancelPath: cancelFile.path,
+    );
     try {
       final file = File(p.join(work.path, 'write.ps1'));
       await file.writeAsString(script, flush: true);

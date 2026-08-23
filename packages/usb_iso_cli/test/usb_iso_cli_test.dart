@@ -1,5 +1,6 @@
 import 'package:test/test.dart';
 import 'package:usb_iso_cli/usb_iso_cli.dart';
+import 'package:usb_iso_core/usb_iso_core.dart';
 
 void main() {
   test('help exits successfully', () async {
@@ -8,5 +9,35 @@ void main() {
 
   test('make without arguments is a usage error', () async {
     expect(await run(['make']), 64);
+  });
+
+  test('rewrites a TTY write line and prints other steps once', () {
+    final buffer = StringBuffer();
+    final printer = CliProgressWriter(sink: buffer, tty: true);
+    printer.add(
+      const WriteProgress(
+        step: WriteStep.writing,
+        message: 'Writing ISO image… 10%',
+        percent: 0.3,
+      ),
+    );
+    printer.add(
+      const WriteProgress(
+        step: WriteStep.writing,
+        message: 'Writing ISO image… 11%',
+        percent: 0.31,
+      ),
+    );
+    printer.add(
+      const WriteProgress(
+        step: WriteStep.verifying,
+        message: 'Verifying the raw write…',
+        percent: 0.9,
+      ),
+    );
+    printer.finish();
+    expect(buffer.toString(), contains('\rWriting ISO image… 10%  (30%)'));
+    expect(buffer.toString(), contains('\rWriting ISO image… 11%  (31%)'));
+    expect(buffer.toString(), contains('Verifying the raw write…  (90%)\n'));
   });
 }

@@ -829,6 +829,189 @@ image-type      : read/write
       expect(isoLooksLikeHybridDisk(file.path), isFalse);
     });
   });
+
+  group('shouldEmitWritePercent', () {
+    test('emits only when the whole percent changes', () {
+      expect(
+        shouldEmitWritePercent(
+          writtenBytes: 0,
+          totalBytes: 100,
+          lastEmittedPercent: -1,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldEmitWritePercent(
+          writtenBytes: 50,
+          totalBytes: 10000,
+          lastEmittedPercent: 0,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldEmitWritePercent(
+          writtenBytes: 100,
+          totalBytes: 10000,
+          lastEmittedPercent: 0,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldEmitWritePercent(
+          writtenBytes: 100,
+          totalBytes: 100,
+          lastEmittedPercent: 99,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('macosAuthopenRawWritePython', () {
+    test('uses stdoutpipe and 8 MiB blocks', () {
+      final script = macosAuthopenRawWritePython();
+      expect(script, contains('-stdoutpipe'));
+      expect(script, contains('$rawWriteChunkBytes'));
+      expect(script, contains('inp.read(chunk_size)'));
+    });
+
+    test('is valid Python', () {
+      const python = '/usr/bin/python3';
+      if (!File(python).existsSync()) {
+        return;
+      }
+      final file = File(
+        '${Directory.systemTemp.createTempSync('usb_iso_py_').path}/write.py',
+      );
+      addTearDown(() => file.parent.deleteSync(recursive: true));
+      file.writeAsStringSync(macosAuthopenRawWritePython());
+      final compiled = Process.runSync(python, ['-m', 'py_compile', file.path]);
+      expect(compiled.exitCode, 0, reason: compiled.stderr.toString());
+    });
+  });
+
+  group('macosAuthopenFailureMessage', () {
+    test('maps cancel and deny to the approval message', () {
+      expect(
+        macosAuthopenFailureMessage(
+          diskId: 'disk70',
+          stderr: 'User canceled authorization',
+          exitCode: 1,
+          writtenBytes: 0,
+        ),
+        macosAuthopenDeniedMessage,
+      );
+      expect(
+        macosAuthopenFailureMessage(
+          diskId: 'disk70',
+          stderr: 'open dst: Operation not permitted',
+          exitCode: 1,
+          writtenBytes: 0,
+        ),
+        macosAuthopenDeniedMessage,
+      );
+    });
+
+    test('keeps a mid-write I/O error', () {
+      expect(
+        macosAuthopenFailureMessage(
+          diskId: 'disk70',
+          stderr: 'Input/output error',
+          exitCode: 1,
+          writtenBytes: 1024,
+        ),
+        'Raw ISO write failed on disk70: Input/output error',
+      );
+    });
+  });
+
+  group('windowsRawWritePowerShell', () {
+    test('takes the disk offline before writing PhysicalDrive', () {
+      final script = windowsRawWritePowerShell(
+        diskNumber: 2,
+        isoPath: r'C:\iso\ubuntu.iso',
+        progressPath: r'C:\tmp\progress',
+        cancelPath: r'C:\tmp\cancel',
+      );
+      expect(
+        script,
+        contains(r'Set-Disk -Number $diskNumber -IsOffline $true'),
+      );
+      expect(
+        script,
+        contains(r'Set-Disk -Number $diskNumber -IsOffline $false'),
+      );
+      expect(script, contains(r'\\.\PhysicalDrive$diskNumber'));
+      expect(script, contains('8MB'));
+    });
+  });
+
+  group('WindowsPrivilege', () {
+    test('is a no-op off Windows', () async {
+      await WindowsPrivilege.ensureAdministrator(
+        isWindows: false,
+        probe: () async => false,
+      );
+    });
+
+    test('refuses an unelevated Windows process', () async {
+      expect(
+        () => WindowsPrivilege.ensureAdministrator(
+          isWindows: true,
+          probe: () async => false,
+        ),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            WindowsPrivilege.adminRequiredMessage,
+          ),
+        ),
+      );
+    });
+
+    test('allows an elevated Windows process', () async {
+      await WindowsPrivilege.ensureAdministrator(
+        isWindows: true,
+        probe: () async => true,
+      );
+    });
+  });
+
+  group('dryRunStrategyNotes', () {
+    final huge = IsoProfile(
+      mountPath: '/mnt',
+      kind: IsoKind.windowsX64,
+      hasX64Efi: true,
+      hasArmEfi: false,
+      installKind: WindowsInstallImageKind.wim,
+      installImagePath: '/mnt/sources/install.wim',
+      installImageSize: fat32MaxFileBytes + 1,
+    );
+
+    test('describes FAT32+NTFS as the Windows Win11 path', () {
+      expect(
+        dryRunStrategyNotes(
+          strategy: WriteStrategy.windowsDualPartition,
+          profile: huge,
+          windowsHost: true,
+        ),
+        contains('FAT32 WINBOOT + NTFS WINSETUP'),
+      );
+    });
+
+    test('calls DISM split a fallback on Windows', () {
+      expect(
+        dryRunStrategyNotes(
+          strategy: WriteStrategy.windowsFileCopy,
+          profile: huge,
+          windowsHost: true,
+          splitTool: r'C:\Windows\System32\Dism.exe',
+        ),
+        contains('DISM split is fallback only'),
+      );
+    });
+  });
 }
 
 class FakeHost implements HostPlatform {

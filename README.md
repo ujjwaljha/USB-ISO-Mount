@@ -1,6 +1,10 @@
 # USB ISO Mount
 
-Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linux live ISO on **macOS, Windows, or Linux**. The same engine powers a Flutter desktop app and a command-line tool.
+Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linux live ISO.
+
+**Supported (CLI and GUI):** macOS and Windows.  
+**Best-effort CLI only:** Linux (no Flutter desktop target).  
+**Proven on hardware:** macOS Windows ISO file-copy (FAT32 + wimlib split), and macOS Linux/hybrid raw write via CLI (`authopen`). Windows writes are implemented but not yet confirmed on a real Windows PC.
 
 **Making a bootable USB erases the target drive.** Only removable USB disks are listed by default. Internal disks, disk images, and the system boot disk are refused. SD and Thunderbolt drives are optional advanced targets.
 
@@ -8,23 +12,30 @@ Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linu
 
 - A Windows, Windows PE, or hybrid Linux `.iso`
 - A USB stick large enough for the image (8 GB or larger is typical)
-- Administrator rights (macOS password prompt, “Run as administrator” on Windows, or `sudo` on Linux)
+- Administrator rights:
+  - **macOS:** password prompt for erase (`diskutil`); **authopen** prompt for a raw Linux write
+  - **Windows:** run the GUI (UAC) or an **Administrator** terminal for the CLI
+  - **Linux (CLI):** `sudo`
+
+Hybrid Linux ISOs often **cannot be mounted as a volume** (especially on macOS). The app reads ISO 9660 metadata and raw-writes the image instead.
 
 ### Extra tool for large Windows images
 
 Windows installer files (`install.wim` / `install.esd`) are often larger than 4 GB. FAT32 cannot store a file that large.
 
-- **Windows:** the app uses a FAT32 boot partition plus an NTFS data partition, so the image is copied intact.
-- **macOS and Linux:** the image is split. That requires [wimlib](https://wimlib.net/):
+- **Windows:** FAT32 boot partition (`WINBOOT`) plus an NTFS data partition (`WINSETUP`). The image is copied intact. DISM split is used only if the stick is too small for both partitions.
+- **macOS (and Linux CLI):** the image is split. That requires [wimlib](https://wimlib.net/):
 
 ```bash
 brew install wimlib          # macOS
-sudo apt install wimtools    # Debian/Ubuntu
+sudo apt install wimtools    # Debian/Ubuntu (CLI only)
 ```
 
-On Windows, splitting (fallback only) uses built-in `Dism.exe`. The app is compiled to request administrator rights.
+On Windows, splitting (fallback only) uses built-in `Dism.exe`. The GUI is compiled to request administrator rights.
 
 ## Desktop app
+
+macOS and Windows only (`flutter run -d linux` is not set up).
 
 ```bash
 cd app
@@ -35,7 +46,7 @@ flutter run -d macos
 
 1. Browse to an `.iso`
 2. Choose a USB drive (refresh if you just plugged it in)
-3. Optionally **Mount ISO** to inspect the type (Windows x64/ARM, WinPE, Linux)
+3. Optionally **Mount ISO** to inspect the type (Windows x64/ARM, WinPE, Linux). Hybrid Linux images typically fail to mount; the app will say it will **raw-copy** instead.
 4. Click **Make bootable USB** and confirm the erase warning
 5. **Cancel** stops a write; if the disk was already erased it will not be bootable
 
@@ -51,11 +62,16 @@ dart run usb_iso_cli list
 dart run usb_iso_cli list --advanced
 dart run usb_iso_cli mount --iso ~/Downloads/Win11.iso
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --dry-run
-sudo dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --yes
-sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
+dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --yes
 ```
 
-On Windows, use the disk number from `list` (for example `--disk 2`) and run the terminal as Administrator.
+On Windows, use the disk number from `list` (for example `--disk 2`) and run the terminal as Administrator. An unelevated `make` (without `--dry-run`) exits with: `Run this terminal as Administrator before writing a USB.` Ctrl+C cancels a write the same way as the GUI Cancel button. On macOS, a raw Linux write waits for the **authopen** prompt before any bytes are written; progress then updates once per percent.
+
+Linux CLI (best-effort, not first-class):
+
+```bash
+sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
+```
 
 | Command | Purpose |
 | --- | --- |
@@ -77,17 +93,35 @@ The ISO is classified first (do **not** treat a hybrid MBR as Linux by itself �
 1. **Windows x64 / ARM / WinPE** — file-copy to a GPT FAT32 volume (`WINSETUP`). If `install.wim` or `install.esd` is over 4 GB:
    - Windows: FAT32 `WINBOOT` (EFI + `boot.wim`) + NTFS `WINSETUP` (the large installer image)
    - macOS / Linux: split the image to `install.swm` with wimlib
-2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style). On macOS these hybrid images often cannot be mounted as a volume; the app reads ISO 9660 metadata instead.
+2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style). On macOS, `authopen` writes `/dev/rdiskN`. On Windows, the disk is taken **offline** for an exclusive write to `\\.\PhysicalDriveN`.
 3. **Generic UEFI** — file-copy, or raw write if the ISO file itself looks like a hybrid disk image
 4. **Multi-ISO** — reserved; not implemented (no Ventoy)
 
 After a file-copy or raw write the volume is flushed and a light verify runs (EFI / installer size, or bytes written). A failed eject after a successful write is reported as a warning, not a failed write.
 
+## Windows first-run checklist
+
+Code is complete; run this on a real Windows 10/11 PC before treating Windows as proven:
+
+1. Install Flutter/Dart. From `app/`: `flutter run -d windows` (accept the UAC prompt). From `packages/usb_iso_cli`: `dart pub get`.
+2. Plug in a spare USB. `dart run usb_iso_cli list` should show it as a numeric id with `BusType` USB.
+3. `dart run usb_iso_cli make --iso <Win11.iso> --disk <N> --dry-run` — expect `windowsDualPartition` and `FAT32 WINBOOT + NTFS WINSETUP`.
+4. `dart run usb_iso_cli make --iso <ubuntu.iso> --disk <N> --dry-run` — expect `rawHybrid`. Mount-DiskImage may fail; that is normal.
+5. In an **unelevated** terminal, `make --yes` (not `--dry-run`) must refuse with the Administrator message.
+6. Elevated write: Win11 (FAT32+NTFS), then Ubuntu (raw). Confirm `file_picker` works in the GUI after UAC.
+
+Helper script (optional):
+
+```powershell
+powershell -File scripts/windows_first_run.ps1
+powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
+```
+
 ## Repository layout
 
 - [`app/`](app/) — Flutter desktop GUI (macOS and Windows)
-- [`packages/usb_iso_core/`](packages/usb_iso_core/) — USB detection, ISO mount, write pipeline
-- [`packages/usb_iso_cli/`](packages/usb_iso_cli/) — `usb_iso` CLI
+- [`packages/usb_iso_core`](packages/usb_iso_core/) — USB detection, ISO mount, write pipeline
+- [`packages/usb_iso_cli`](packages/usb_iso_cli/) — `usb_iso` CLI (macOS, Windows; Linux best-effort)
 
 ## Safety
 

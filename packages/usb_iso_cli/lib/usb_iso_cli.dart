@@ -29,6 +29,43 @@ Future<int> run(List<String> arguments) async {
   }
 }
 
+String formatCliProgress(WriteProgress progress) {
+  final percent = progress.percent == null
+      ? ''
+      : '  (${(progress.percent! * 100).round()}%)';
+  return '${progress.message}$percent';
+}
+
+/// Prints write progress, rewriting the same TTY line during a raw write.
+class CliProgressWriter {
+  CliProgressWriter({StringSink? sink, bool? tty})
+    : _sink = sink ?? stdout,
+      _tty = tty ?? stdout.hasTerminal;
+
+  final StringSink _sink;
+  final bool _tty;
+  bool _rewriting = false;
+
+  void add(WriteProgress progress) {
+    final line = formatCliProgress(progress);
+    if (_tty && progress.step == WriteStep.writing) {
+      _sink.write('\r$line\x1b[K');
+      _rewriting = true;
+      return;
+    }
+    finish();
+    _sink.writeln(line);
+  }
+
+  void finish() {
+    if (!_rewriting) {
+      return;
+    }
+    _sink.writeln();
+    _rewriting = false;
+  }
+}
+
 class ListCommand extends Command<int> {
   ListCommand() {
     argParser.addFlag(
@@ -213,6 +250,10 @@ class MakeCommand extends Command<int> {
       );
     }
 
+    if (!dryRun) {
+      await WindowsPrivilege.ensureAdministrator();
+    }
+
     if (!dryRun && !yes) {
       final confirmed = _confirmErase(disk);
       if (!confirmed) {
@@ -222,19 +263,32 @@ class MakeCommand extends Command<int> {
     }
 
     stdout.writeln('Target: ${disk.label}');
-    await for (final progress in BootableWriter().write(
-      WriteRequest(
-        isoPath: iso,
-        disk: disk,
-        confirmed: true,
-        dryRun: dryRun,
-        allowAdvancedTargets: advanced,
-      ),
-    )) {
-      final percent = progress.percent == null
-          ? ''
-          : '  (${(progress.percent! * 100).round()}%)';
-      stdout.writeln('${progress.message}$percent');
+    final token = CancellationToken();
+    final printer = CliProgressWriter();
+    final sigint = ProcessSignal.sigint.watch().listen((_) {
+      stderr.writeln('Cancel requested…');
+      token.cancel();
+    });
+    try {
+      await for (final progress in BootableWriter().write(
+        WriteRequest(
+          isoPath: iso,
+          disk: disk,
+          confirmed: true,
+          dryRun: dryRun,
+          allowAdvancedTargets: advanced,
+          cancellation: token,
+        ),
+      )) {
+        printer.add(progress);
+      }
+      printer.finish();
+    } on WriteCancelledException catch (error) {
+      printer.finish();
+      stderr.writeln(error.message);
+      return 1;
+    } finally {
+      await sigint.cancel();
     }
     return 0;
   }

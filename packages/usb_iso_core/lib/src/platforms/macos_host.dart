@@ -494,8 +494,119 @@ class MacosHost implements HostPlatform {
       );
     }
 
-    // AppleScript "administrator privileges" cannot open /dev/rdisk (TCC).
-    // authopen is the supported way to get a privileged write to a disk device.
+    if (!File(isoPath).existsSync()) {
+      throw InvalidIsoException('ISO not found: $isoPath');
+    }
+
+    final python = _python3();
+    if (python != null) {
+      await _writeRawViaAuthopenFd(
+        disk: disk,
+        rdisk: rdisk,
+        isoPath: isoPath,
+        python: python,
+        onProgress: onProgress,
+        cancellation: cancellation,
+      );
+    } else {
+      await _writeRawViaAuthopenStdin(
+        disk: disk,
+        rdisk: rdisk,
+        isoPath: isoPath,
+        onProgress: onProgress,
+        cancellation: cancellation,
+      );
+    }
+
+    // Hybrid images often auto-mount; unmount so flush/eject can finish.
+    await _runner.run('diskutil', ['unmountDisk', disk.id]);
+  }
+
+  String? _python3() {
+    const bundled = '/usr/bin/python3';
+    if (File(bundled).existsSync()) {
+      return bundled;
+    }
+    return null;
+  }
+
+  /// authopen -stdoutpipe hands back the disk fd so we can write 8 MiB blocks.
+  /// Piping stdin through authopen is capped at its ~8 KiB copy loop.
+  Future<void> _writeRawViaAuthopenFd({
+    required UsbDisk disk,
+    required String rdisk,
+    required String isoPath,
+    required String python,
+    RawWriteProgress? onProgress,
+    CancellationToken? cancellation,
+  }) async {
+    final work = Directory.systemTemp.createTempSync('usb_iso_raw_');
+    final progressFile = File(p.join(work.path, 'progress'));
+    final cancelFile = File(p.join(work.path, 'cancel'));
+    final script = File(p.join(work.path, 'write.py'));
+    await script.writeAsString(macosAuthopenRawWritePython(), flush: true);
+
+    try {
+      final process = await Process.start(python, [
+        script.path,
+        isoPath,
+        rdisk,
+        progressFile.path,
+        cancelFile.path,
+      ]);
+      process.stdout.drain<void>();
+      final errFuture = process.stderr.transform(utf8.decoder).join();
+      final total = File(isoPath).lengthSync();
+      onProgress?.call(0, total);
+      var written = 0;
+      while (true) {
+        final done = await process.exitCode.timeout(
+          const Duration(milliseconds: 250),
+          onTimeout: () => -1,
+        );
+        if (cancellation?.isCancelled == true && !cancelFile.existsSync()) {
+          cancelFile.writeAsStringSync('1');
+        }
+        if (progressFile.existsSync()) {
+          written = int.tryParse(progressFile.readAsStringSync().trim()) ?? 0;
+          onProgress?.call(written, total);
+        }
+        if (done != -1) {
+          if (done == 75 || cancellation?.isCancelled == true) {
+            throw WriteCancelledException(
+              'Write cancelled. The USB was erased and may not be bootable.',
+            );
+          }
+          if (done != 0) {
+            final err = await errFuture;
+            throw UsbIsoException(
+              macosAuthopenFailureMessage(
+                diskId: disk.id,
+                stderr: err,
+                exitCode: done,
+                writtenBytes: written,
+              ),
+            );
+          }
+          onProgress?.call(total, total);
+          return;
+        }
+      }
+    } finally {
+      if (work.existsSync()) {
+        work.deleteSync(recursive: true);
+      }
+    }
+  }
+
+  Future<void> _writeRawViaAuthopenStdin({
+    required UsbDisk disk,
+    required String rdisk,
+    required String isoPath,
+    RawWriteProgress? onProgress,
+    CancellationToken? cancellation,
+  }) async {
+    const authopen = '/usr/libexec/authopen';
     final process = await Process.start(authopen, ['-w', rdisk]);
     process.stdout.drain<void>();
     final errFuture = process.stderr.transform(utf8.decoder).join();
@@ -504,23 +615,36 @@ class MacosHost implements HostPlatform {
     onProgress?.call(0, total);
     var written = 0;
     try {
-      await process.stdin.addStream(
-        File(isoPath).openRead().map((chunk) {
+      final raf = await File(isoPath).open();
+      try {
+        while (true) {
           cancellation?.throwIfCancelled(diskAlreadyErased: true);
+          final chunk = await raf.read(rawWriteChunkBytes);
+          if (chunk.isEmpty) {
+            break;
+          }
+          process.stdin.add(chunk);
           written += chunk.length;
           onProgress?.call(written, total);
-          return chunk;
-        }),
-      );
+        }
+      } finally {
+        await raf.close();
+      }
       await process.stdin.close();
     } catch (error) {
       process.kill();
       if (error is WriteCancelledException) {
         rethrow;
       }
+      final code = await process.exitCode;
       final err = await errFuture;
       throw UsbIsoException(
-        'Raw ISO write failed on ${disk.id}: ${err.trim().isEmpty ? error.toString() : err.trim()}',
+        macosAuthopenFailureMessage(
+          diskId: disk.id,
+          stderr: err,
+          exitCode: code,
+          writtenBytes: written,
+        ),
       );
     }
 
@@ -533,7 +657,12 @@ class MacosHost implements HostPlatform {
     if (code != 0) {
       final err = await errFuture;
       throw UsbIsoException(
-        'Raw ISO write failed on ${disk.id}: ${err.trim()}',
+        macosAuthopenFailureMessage(
+          diskId: disk.id,
+          stderr: err,
+          exitCode: code,
+          writtenBytes: written,
+        ),
       );
     }
     onProgress?.call(total, total);
@@ -548,6 +677,118 @@ class MacosHost implements HostPlatform {
       );
     }
   }
+}
+
+/// Python that receives the authopen disk fd and writes [rawWriteChunkBytes] blocks.
+String macosAuthopenRawWritePython() {
+  return '''
+import array, fcntl, os, socket, subprocess, sys
+
+iso, rdisk, progress_path, cancel_path = sys.argv[1:5]
+chunk_size = $rawWriteChunkBytes
+
+def fail(message, code=1):
+    sys.stderr.write(message.rstrip() + "\\n")
+    sys.exit(code)
+
+parent, child = socket.socketpair()
+try:
+    proc = subprocess.Popen(
+        ["/usr/libexec/authopen", "-stdoutpipe", "-w", rdisk],
+        stdout=child,
+        stderr=subprocess.PIPE,
+    )
+finally:
+    child.close()
+
+fd = None
+try:
+    while fd is None:
+        try:
+            _data, anc, _flags, _addr = parent.recvmsg(
+                4096, socket.CMSG_SPACE(64)
+            )
+        except OSError as error:
+            err = b""
+            if proc.stderr is not None:
+                err = proc.stderr.read()
+            fail((err.decode("utf-8", "replace") or str(error)).strip())
+        if not _data and not anc:
+            break
+        for level, typ, data in anc:
+            if level == socket.SOL_SOCKET and typ == socket.SCM_RIGHTS:
+                fds = array.array("i")
+                fds.frombytes(data[: len(data) - (len(data) % fds.itemsize)])
+                if fds:
+                    fd = int(fds[0])
+                    for extra in fds[1:]:
+                        os.close(int(extra))
+                    break
+finally:
+    parent.close()
+
+if fd is None:
+    err = b""
+    if proc.stderr is not None:
+        err = proc.stderr.read()
+    fail((err.decode("utf-8", "replace") or "Administrator approval was required to write the disk.").strip())
+
+written = 0
+total = os.path.getsize(iso)
+out = os.fdopen(fd, "wb", buffering=0)
+try:
+    with open(iso, "rb", buffering=0) as inp:
+        while True:
+            if os.path.exists(cancel_path):
+                sys.exit(75)
+            chunk = inp.read(chunk_size)
+            if not chunk:
+                break
+            pad = (-len(chunk)) % 512
+            if pad:
+                chunk += b"\\x00" * pad
+            out.write(chunk)
+            written += len(chunk) - pad
+            with open(progress_path, "w") as progress:
+                progress.write(str(min(written, total)))
+    out.flush()
+    if hasattr(fcntl, "F_FULLFSYNC"):
+        fcntl.fcntl(out.fileno(), fcntl.F_FULLFSYNC)
+    else:
+        os.fsync(out.fileno())
+finally:
+    out.close()
+    try:
+        proc.wait(timeout=8)
+    except Exception:
+        proc.kill()
+''';
+}
+
+const macosAuthopenDeniedMessage =
+    'Administrator approval was required to write the disk.';
+
+/// Maps authopen stderr/exit codes to a user-facing raw-write error.
+String macosAuthopenFailureMessage({
+  required String diskId,
+  required String stderr,
+  required int exitCode,
+  int writtenBytes = 0,
+}) {
+  final err = stderr.trim();
+  final lower = err.toLowerCase();
+  final looksDenied =
+      lower.contains('cancel') ||
+      lower.contains('denied') ||
+      lower.contains('authoriz') ||
+      lower.contains('authentication') ||
+      lower.contains('not permitted') ||
+      (writtenBytes == 0 && exitCode != 0);
+  if (looksDenied) {
+    return macosAuthopenDeniedMessage;
+  }
+  return 'Raw ISO write failed on $diskId: '
+      '${err.isEmpty ? 'authopen exited $exitCode' : err}';
 }
 
 class _HdiutilAttach {

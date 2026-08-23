@@ -21,6 +21,30 @@ import 'paths.dart';
 import 'process_runner.dart';
 import 'safety.dart';
 
+/// Extra dry-run lines for the chosen strategy (split tool, Windows layout).
+String dryRunStrategyNotes({
+  required WriteStrategy strategy,
+  required IsoProfile profile,
+  required bool windowsHost,
+  String? splitTool,
+}) {
+  final buffer = StringBuffer();
+  if (strategy == WriteStrategy.windowsDualPartition) {
+    buffer.writeln(
+      'Windows layout: FAT32 WINBOOT + NTFS WINSETUP (installer copied intact).',
+    );
+  }
+  if (profile.needsSplit && strategy == WriteStrategy.windowsFileCopy) {
+    buffer.writeln('Split tool: ${splitTool ?? 'MISSING'}');
+    if (windowsHost) {
+      buffer.writeln(
+        'DISM split is fallback only; a larger USB would use FAT32+NTFS instead.',
+      );
+    }
+  }
+  return buffer.toString().trim();
+}
+
 class WriteRequest {
   const WriteRequest({
     required this.isoPath,
@@ -301,14 +325,23 @@ class BootableWriter {
     );
     request.cancellation?.throwIfCancelled();
 
-    yield const WriteProgress(
-      step: WriteStep.writing,
-      message: 'Writing ISO image…',
-      percent: 0.2,
-    );
+    if (Platform.isMacOS) {
+      yield const WriteProgress(
+        step: WriteStep.writing,
+        message: 'Waiting for administrator approval to write the disk…',
+        percent: 0.2,
+      );
+    } else {
+      yield const WriteProgress(
+        step: WriteStep.writing,
+        message: 'Writing ISO image…',
+        percent: 0.2,
+      );
+    }
 
     var written = 0;
     var total = File(request.isoPath).lengthSync();
+    var lastPercent = -1;
     late final StreamController<WriteProgress> controller;
     controller = StreamController<WriteProgress>();
     final write = _host.writeRawImage(
@@ -318,12 +351,22 @@ class BootableWriter {
       onProgress: (copied, size) {
         written = copied;
         total = size;
+        if (!shouldEmitWritePercent(
+          writtenBytes: copied,
+          totalBytes: size,
+          lastEmittedPercent: lastPercent,
+        )) {
+          return;
+        }
+        lastPercent = size == 0 ? 100 : ((copied * 100) ~/ size).clamp(0, 100);
         final fraction = size == 0 ? 1.0 : copied / size;
         if (!controller.isClosed) {
           controller.add(
             WriteProgress(
               step: WriteStep.writing,
-              message: 'Writing ISO image… ${(fraction * 100).round()}%',
+              message: lastPercent == 0 && Platform.isMacOS
+                  ? 'Waiting for administrator approval to write the disk…'
+                  : 'Writing ISO image… $lastPercent%',
               percent: 0.2 + (0.65 * fraction),
             ),
           );
@@ -405,8 +448,14 @@ class BootableWriter {
       ..writeln(profile.summary)
       ..writeln('Strategy: ${strategy.name}')
       ..writeln('Steps: $layout.');
-    if (profile.needsSplit && strategy == WriteStrategy.windowsFileCopy) {
-      buffer.writeln('Split tool: ${splitTool ?? 'MISSING'}');
+    final notes = dryRunStrategyNotes(
+      strategy: strategy,
+      profile: profile,
+      windowsHost: Platform.isWindows,
+      splitTool: splitTool,
+    );
+    if (notes.isNotEmpty) {
+      buffer.writeln(notes);
     }
     return buffer.toString().trim();
   }

@@ -9,7 +9,8 @@ export 'src/bytes.dart'
         fat32MaxFileBytes,
         wimSplitSizeMiB,
         windowsFat32PartitionMaxBytes,
-        windowsFat32BootPartitionBytes;
+        windowsFat32BootPartitionBytes,
+        rawWriteChunkBytes;
 export 'src/cancellation.dart';
 export 'src/disk_enumerator.dart';
 export 'src/disk_id.dart';
@@ -38,8 +39,15 @@ export 'src/platforms/macos_host.dart'
         hdiutilMountPath,
         hdiutilDeviceNode,
         isoMountFromHdiutilInfo,
-        isoMountFromInfoPlist;
+        isoMountFromInfoPlist,
+        macosAuthopenFailureMessage,
+        macosAuthopenDeniedMessage,
+        macosAuthopenRawWritePython;
 export 'src/platforms/windows_host.dart'
-    show usbDiskFromWindowsInfo, isAdvancedWindowsBus;
+    show
+        usbDiskFromWindowsInfo,
+        isAdvancedWindowsBus,
+        windowsRawWritePowerShell;
+export 'src/privilege.dart';
 export 'src/process_runner.dart';
 export 'src/safety.dart';

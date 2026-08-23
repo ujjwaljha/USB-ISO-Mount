@@ -509,7 +509,7 @@ with open(src, 'rb') as inp, open(dst, 'wb') as out:
     while True:
         if os.path.exists(cancel):
             sys.exit(75)
-        chunk = inp.read(4 * 1024 * 1024)
+        chunk = inp.read(8 * 1024 * 1024)
         if not chunk:
             break
         out.write(chunk)

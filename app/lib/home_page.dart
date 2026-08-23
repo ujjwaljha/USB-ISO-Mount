@@ -140,11 +140,19 @@ class _HomePageState extends State<HomePage> {
       }
       try {
         final profile = _inspector.inspectIsoFile(iso);
+        final strategy = LayoutChooser.strategyFor(
+          profile: profile,
+          windowsHost: Platform.isWindows,
+          diskSizeBytes: _selected?.sizeBytes ?? 0,
+          isoLooksHybrid: isoLooksLikeHybridDisk(iso),
+        );
         setState(() {
           _isoMount = null;
           _isoProfile = profile;
-          _status =
-              'Could not mount as a volume (typical for hybrid Linux ISOs).';
+          _status = strategy == WriteStrategy.rawHybrid
+              ? 'Could not mount as a volume (typical for hybrid Linux ISOs). '
+                    'The write will raw-copy the ISO to the USB.'
+              : 'Could not mount as a volume.';
           _error = profile.kind == IsoKind.unknown ? error.message : null;
         });
       } on UsbIsoException {
