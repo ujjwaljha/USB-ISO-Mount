@@ -12,6 +12,7 @@ import '../json_util.dart';
 import '../models/iso_mount.dart';
 import '../models/usb_disk.dart';
 import '../process_runner.dart';
+import '../volume_filesystem.dart';
 
 const _volumeLabel = 'WINSETUP';
 
@@ -357,6 +358,33 @@ class MacosHost implements HostPlatform {
     if (!result.success) {
       throw UsbIsoException(
         'Failed to erase ${disk.id}: ${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
+      );
+    }
+  }
+
+  @override
+  Future<void> formatDataVolume(
+    UsbDisk disk, {
+    required VolumeFilesystem filesystem,
+    String volumeLabel = defaultVolumeLabel,
+    bool allowAdvancedTargets = false,
+  }) async {
+    if (!filesystem.isSupportedOn('macos')) {
+      throw UsbIsoException(filesystem.unsupportedHostMessage);
+    }
+    await verifyWritable(disk, allowAdvancedTargets: allowAdvancedTargets);
+    final label = sanitizeVolumeLabel(volumeLabel, filesystem);
+    final result = await _runner.run('diskutil', [
+      'eraseDisk',
+      filesystem.macosDiskutilName,
+      label,
+      'GPT',
+      disk.id,
+    ], elevated: true);
+    if (!result.success) {
+      throw UsbIsoException(
+        'Failed to format ${disk.id} as ${filesystem.displayName}: '
+        '${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
       );
     }
   }

@@ -13,6 +13,7 @@ export 'src/bytes.dart'
         rawWriteChunkBytes;
 export 'src/cancellation.dart';
 export 'src/disk_enumerator.dart';
+export 'src/disk_formatter.dart';
 export 'src/disk_id.dart';
 export 'src/disk_layout.dart';
 export 'src/exceptions.dart';
@@ -51,3 +52,4 @@ export 'src/platforms/windows_host.dart'
 export 'src/privilege.dart';
 export 'src/process_runner.dart';
 export 'src/safety.dart';
+export 'src/volume_filesystem.dart';

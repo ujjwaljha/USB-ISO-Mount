@@ -12,6 +12,7 @@ import '../json_util.dart';
 import '../models/iso_mount.dart';
 import '../models/usb_disk.dart';
 import '../process_runner.dart';
+import '../volume_filesystem.dart';
 
 const _volumeLabel = 'WINSETUP';
 
@@ -356,6 +357,114 @@ class LinuxHost implements HostPlatform {
     }
   }
 
+  @override
+  Future<void> formatDataVolume(
+    UsbDisk disk, {
+    required VolumeFilesystem filesystem,
+    String volumeLabel = defaultVolumeLabel,
+    bool allowAdvancedTargets = false,
+  }) async {
+    await verifyWritable(disk, allowAdvancedTargets: allowAdvancedTargets);
+    final label = sanitizeVolumeLabel(volumeLabel, filesystem);
+    final mkfs = await _requireMkfs(filesystem);
+
+    await _unmountDisk(disk);
+    final wipe = await _runner.run('wipefs', [
+      '-a',
+      disk.devicePath,
+    ], elevated: true);
+    if (!wipe.success) {
+      throw UsbIsoException('Failed to wipe ${disk.id}: ${wipe.stderr.trim()}');
+    }
+
+    final parted = await _runner.run('parted', [
+      '-s',
+      disk.devicePath,
+      'mklabel',
+      'gpt',
+      'mkpart',
+      label,
+      '1MiB',
+      '100%',
+    ], elevated: true);
+    if (!parted.success) {
+      throw UsbIsoException(
+        'Failed to partition ${disk.id}: ${parted.stderr.trim()}',
+      );
+    }
+
+    await _runner.run('partprobe', [disk.devicePath], elevated: true);
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+
+    final partition = _firstPartitionDevice(disk.devicePath);
+    final format = await _runner.run(mkfs.executable, [
+      ...mkfs.arguments,
+      if (mkfs.labelFlag != null) ...[mkfs.labelFlag!, label],
+      partition,
+    ], elevated: true);
+    if (!format.success) {
+      throw UsbIsoException(
+        'Failed to format ${disk.id} as ${filesystem.displayName}: '
+        '${format.stderr.trim()}',
+      );
+    }
+
+    for (var i = 0; i < 40; i++) {
+      await _runner.run('partprobe', [disk.devicePath], elevated: true);
+      final mounted = await _ensureMounted(partition, label);
+      if (mounted != null) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+  }
+
+  Future<_MkfsTool> _requireMkfs(VolumeFilesystem filesystem) async {
+    Future<String?> which(String command) async {
+      final result = await _runner.run('sh', ['-c', 'command -v $command']);
+      final path = result.stdout.trim().split('\n').first.trim();
+      if (result.success && path.isNotEmpty) {
+        return path;
+      }
+      return null;
+    }
+
+    switch (filesystem) {
+      case VolumeFilesystem.fat32:
+        final tool = await which('mkfs.vfat') ?? await which('mkfs.fat');
+        if (tool == null) {
+          throw UsbIsoException(
+            'FAT32 requires mkfs.vfat. Install dosfstools.',
+          );
+        }
+        return _MkfsTool(tool, arguments: const ['-F', '32'], labelFlag: '-n');
+      case VolumeFilesystem.exfat:
+        final tool = await which('mkfs.exfat');
+        if (tool == null) {
+          throw DependencyMissingException(
+            'exFAT requires mkfs.exfat. Install exfatprogs.',
+          );
+        }
+        return _MkfsTool(tool, labelFlag: '-L');
+      case VolumeFilesystem.ntfs:
+        final tool = await which('mkfs.ntfs') ?? await which('mkntfs');
+        if (tool == null) {
+          throw DependencyMissingException(
+            'NTFS requires mkfs.ntfs. Install ntfs-3g.',
+          );
+        }
+        return _MkfsTool(tool, arguments: const ['-f'], labelFlag: '-L');
+    }
+  }
+
+  String _firstPartitionDevice(String devicePath) {
+    final name = p.basename(devicePath);
+    if (RegExp(r'\d$').hasMatch(name)) {
+      return '${devicePath}p1';
+    }
+    return '${devicePath}1';
+  }
+
   Future<void> _unmountDisk(UsbDisk disk) async {
     for (final mount in disk.mountPoints) {
       await _runner.run('umount', [mount], elevated: true);
@@ -577,4 +686,12 @@ with open(src, 'rb') as inp, open(dst, 'wb') as out:
       );
     }
   }
+}
+
+class _MkfsTool {
+  const _MkfsTool(this.executable, {this.arguments = const [], this.labelFlag});
+
+  final String executable;
+  final List<String> arguments;
+  final String? labelFlag;
 }

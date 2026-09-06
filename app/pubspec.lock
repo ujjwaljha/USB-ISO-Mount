@@ -235,7 +235,7 @@ packages:
       path: "../packages/usb_iso_core"
       relative: true
     source: path
-    version: "1.1.0"
+    version: "1.2.0"
   vector_math:
     dependency: transitive
     description:

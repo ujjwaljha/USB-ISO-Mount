@@ -13,6 +13,7 @@ import '../models/iso_mount.dart';
 import '../models/usb_disk.dart';
 import '../privilege.dart';
 import '../process_runner.dart';
+import '../volume_filesystem.dart';
 
 const _volumeLabel = 'WINSETUP';
 
@@ -358,6 +359,58 @@ if (\$disk.Size -gt \$maxFat32) {
     if (!result.success) {
       throw UsbIsoException(
         'Failed to erase disk ${disk.id}: ${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
+      );
+    }
+  }
+
+  @override
+  Future<void> formatDataVolume(
+    UsbDisk disk, {
+    required VolumeFilesystem filesystem,
+    String volumeLabel = defaultVolumeLabel,
+    bool allowAdvancedTargets = false,
+  }) async {
+    await WindowsPrivilege.ensureAdministrator(runner: _runner);
+    await verifyWritable(disk, allowAdvancedTargets: allowAdvancedTargets);
+    final number = int.parse(disk.id);
+    final busGuard = _busGuard(allowAdvancedTargets || disk.isAdvancedTarget);
+    final label = sanitizeVolumeLabel(volumeLabel, filesystem);
+    final escapedLabel = label.replaceAll("'", "''");
+    final fs = filesystem.windowsFormatName;
+    final capFat32 = filesystem == VolumeFilesystem.fat32
+        ? '''
+\$maxFat32 = $windowsFat32PartitionMaxBytes
+if (\$disk.Size -gt \$maxFat32) {
+  \$part = New-Partition -DiskNumber \$diskNumber -Size \$maxFat32 -AssignDriveLetter
+} else {
+  \$part = New-Partition -DiskNumber \$diskNumber -UseMaximumSize -AssignDriveLetter
+}
+'''
+        : r'''
+$part = New-Partition -DiskNumber $diskNumber -UseMaximumSize -AssignDriveLetter
+''';
+    final script =
+        '''
+\$ErrorActionPreference = 'Stop'
+\$diskNumber = $number
+\$disk = Get-Disk -Number \$diskNumber
+$busGuard
+if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
+
+Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
+  Get-Volume -ErrorAction SilentlyContinue |
+  Dismount-Volume -Force -ErrorAction SilentlyContinue
+
+Clear-Disk -Number \$diskNumber -RemoveData -RemoveOEM -Confirm:\$false
+Initialize-Disk -Number \$diskNumber -PartitionStyle GPT | Out-Null
+$capFat32
+Format-Volume -Partition \$part -FileSystem '$fs' -NewFileSystemLabel '$escapedLabel' -Confirm:\$false | Out-Null
+''';
+    final result = await _powershellFile(script);
+    if (!result.success) {
+      throw UsbIsoException(
+        'Failed to format disk ${disk.id} as ${filesystem.displayName}: '
+        '${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
       );
     }
   }

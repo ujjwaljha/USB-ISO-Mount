@@ -7,12 +7,13 @@ Future<int> run(List<String> arguments) async {
   final runner =
       CommandRunner<int>(
           'usb_iso',
-          'Mount ISOs and create bootable USB drives (Windows, WinPE, Linux).',
+          'Mount ISOs, create bootable USB drives, or format a spare USB.',
         )
         ..addCommand(ListCommand())
         ..addCommand(MountCommand())
         ..addCommand(UnmountCommand())
-        ..addCommand(MakeCommand());
+        ..addCommand(MakeCommand())
+        ..addCommand(FormatCommand());
 
   try {
     final code = await runner.run(arguments);
@@ -234,16 +235,7 @@ class MakeCommand extends Command<int> {
     }
 
     final id = DiskId.normalize(diskArg);
-    final disks = await DiskEnumerator().listRemovableUsb(
-      includeAdvanced: advanced,
-    );
-    UsbDisk? disk;
-    for (final candidate in disks) {
-      if (candidate.id == id) {
-        disk = candidate;
-        break;
-      }
-    }
+    final disk = await _listedDisk(id, advanced: advanced);
     if (disk == null) {
       throw UnsafeDiskException(
         'Disk $id is not a listed removable USB drive. Run `usb_iso list`.',
@@ -255,7 +247,7 @@ class MakeCommand extends Command<int> {
     }
 
     if (!dryRun && !yes) {
-      final confirmed = _confirmErase(disk);
+      final confirmed = confirmErase(disk);
       if (!confirmed) {
         stderr.writeln('Aborted.');
         return 1;
@@ -292,18 +284,145 @@ class MakeCommand extends Command<int> {
     }
     return 0;
   }
+}
 
-  bool _confirmErase(UsbDisk disk) {
-    if (!stdin.hasTerminal) {
-      stderr.writeln(
-        'Refusing to erase ${disk.id} without --yes (stdin is not a terminal).',
+class FormatCommand extends Command<int> {
+  FormatCommand() {
+    argParser
+      ..addOption(
+        'disk',
+        abbr: 'd',
+        help: 'Whole-disk id from `usb_iso list` (disk4, 1, or sda).',
+      )
+      ..addOption(
+        'fs',
+        abbr: 'f',
+        help: 'Filesystem: fat32 (default), exfat, or ntfs.',
+        defaultsTo: 'fat32',
+      )
+      ..addOption(
+        'label',
+        abbr: 'l',
+        help: 'Volume name (FAT32 max 11 characters).',
+        defaultsTo: defaultVolumeLabel,
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        help: 'Skip the interactive ERASE confirmation.',
+        negatable: false,
+      )
+      ..addFlag(
+        'dry-run',
+        help: 'Validate the target without formatting.',
+        negatable: false,
+      )
+      ..addFlag(
+        'advanced',
+        help: 'Allow SD or Thunderbolt targets listed with `list --advanced`.',
+        negatable: false,
       );
-      return false;
-    }
-    stdout.writeln(
-      'This will permanently erase ${disk.label}. Type ERASE to continue:',
-    );
-    final line = stdin.readLineSync();
-    return line?.trim() == 'ERASE';
   }
+
+  @override
+  String get name => 'format';
+
+  @override
+  String get description =>
+      'Erase a USB drive and format it as FAT32, exFAT, or NTFS (no ISO).';
+
+  @override
+  Future<int> run() async {
+    final diskArg = argResults?['disk'] as String?;
+    final fsArg = argResults?['fs'] as String? ?? 'fat32';
+    final labelArg = argResults?['label'] as String? ?? defaultVolumeLabel;
+    final yes = argResults?['yes'] as bool? ?? false;
+    final dryRun = argResults?['dry-run'] as bool? ?? false;
+    final advanced = argResults?['advanced'] as bool? ?? false;
+
+    if (diskArg == null || diskArg.isEmpty) {
+      throw UsageException('Missing --disk', usage);
+    }
+
+    final filesystem = parseVolumeFilesystem(fsArg);
+    final id = DiskId.normalize(diskArg);
+    final disk = await _listedDisk(id, advanced: advanced);
+    if (disk == null) {
+      throw UnsafeDiskException(
+        'Disk $id is not a listed removable USB drive. Run `usb_iso list`.',
+      );
+    }
+
+    if (!dryRun) {
+      await WindowsPrivilege.ensureAdministrator();
+    }
+
+    if (!dryRun && !yes) {
+      final confirmed = confirmErase(disk);
+      if (!confirmed) {
+        stderr.writeln('Aborted.');
+        return 1;
+      }
+    }
+
+    stdout.writeln(
+      'Target: ${disk.label}  ${filesystem.displayName}  '
+      '${sanitizeVolumeLabel(labelArg, filesystem)}',
+    );
+    final token = CancellationToken();
+    final printer = CliProgressWriter();
+    final sigint = ProcessSignal.sigint.watch().listen((_) {
+      stderr.writeln('Cancel requested…');
+      token.cancel();
+    });
+    try {
+      await for (final progress in DiskFormatter().format(
+        FormatRequest(
+          disk: disk,
+          filesystem: filesystem,
+          volumeLabel: labelArg,
+          confirmed: true,
+          dryRun: dryRun,
+          allowAdvancedTargets: advanced,
+          cancellation: token,
+        ),
+      )) {
+        printer.add(progress);
+      }
+      printer.finish();
+    } on WriteCancelledException catch (error) {
+      printer.finish();
+      stderr.writeln(error.message);
+      return 1;
+    } finally {
+      await sigint.cancel();
+    }
+    return 0;
+  }
+}
+
+Future<UsbDisk?> _listedDisk(String id, {required bool advanced}) async {
+  final disks = await DiskEnumerator().listRemovableUsb(
+    includeAdvanced: advanced,
+  );
+  for (final candidate in disks) {
+    if (candidate.id == id) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+bool confirmErase(UsbDisk disk) {
+  if (!stdin.hasTerminal) {
+    stderr.writeln(
+      'Refusing to erase ${disk.id} without --yes (stdin is not a terminal).',
+    );
+    return false;
+  }
+  stdout.writeln(
+    'This will permanently erase ${disk.label}. Type ERASE to continue:',
+  );
+  final line = stdin.readLineSync();
+  return line?.trim() == 'ERASE';
 }

@@ -1,6 +1,6 @@
 # USB ISO Mount
 
-Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linux live ISO.
+Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linux live ISO. You can also **format a spare USB** as FAT32, exFAT, or NTFS without writing an ISO.
 
 **Supported (CLI and GUI):** macOS and Windows.  
 **Best-effort CLI only:** Linux (no Flutter desktop target).  
@@ -50,6 +50,8 @@ flutter run -d macos
 4. Click **Make bootable USB** and confirm the erase warning
 5. **Cancel** stops a write; if the disk was already erased it will not be bootable
 
+To wipe a stick without an ISO, choose the USB drive, click **Format USB**, pick FAT32 / exFAT / NTFS and a volume name, then confirm. This erases the drive and leaves a normal data volume (not a bootable installer). NTFS is offered on Windows only.
+
 After it finishes, boot the PC from the USB (UEFI). The machine you used only *creates* the stick.
 
 ## Command line
@@ -63,9 +65,11 @@ dart run usb_iso_cli list --advanced
 dart run usb_iso_cli mount --iso ~/Downloads/Win11.iso
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --dry-run
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --yes
+dart run usb_iso_cli format --disk disk4 --fs exfat --label PHOTOS --dry-run
+dart run usb_iso_cli format --disk disk4 --fs fat32 --yes
 ```
 
-On Windows, use the disk number from `list` (for example `--disk 2`) and run the terminal as Administrator. An unelevated `make` (without `--dry-run`) exits with: `Run this terminal as Administrator before writing a USB.` Ctrl+C cancels a write the same way as the GUI Cancel button. On macOS, a raw Linux write waits for the **authopen** prompt before any bytes are written; progress then updates once per percent.
+On Windows, use the disk number from `list` (for example `--disk 2`) and run the terminal as Administrator. An unelevated `make` or `format` (without `--dry-run`) exits with: `Run this terminal as Administrator before writing a USB.` Ctrl+C cancels a write the same way as the GUI Cancel button. On macOS, a raw Linux write waits for the **authopen** prompt before any bytes are written; progress then updates once per percent.
 
 Linux CLI (best-effort, not first-class):
 
@@ -83,8 +87,13 @@ sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
 | `make … --dry-run` | Validate without writing |
 | `make … --yes` | Skip the interactive `ERASE` prompt |
 | `make … --advanced` | Allow an SD / Thunderbolt target |
+| `format --disk <id>` | Erase the USB and format it (no ISO) |
+| `format … --fs fat32\|exfat\|ntfs` | Filesystem (default `fat32`) |
+| `format … --label NAME` | Volume name (FAT32 max 11 characters) |
+| `format … --dry-run` | Validate without formatting |
+| `format … --yes` | Skip the interactive `ERASE` prompt |
 
-Without `--yes`, `make` asks you to type `ERASE`. Non-interactive sessions require `--yes`.
+Without `--yes`, `make` and `format` ask you to type `ERASE`. Non-interactive sessions require `--yes`. macOS cannot format NTFS; use FAT32 or exFAT there.
 
 ## How the write works
 
@@ -130,6 +139,7 @@ powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
 - SD and Thunderbolt drives require an extra opt-in
 - The GUI requires a checkbox; the CLI requires `ERASE` or `--yes`
 - `--dry-run` never erases a disk
+- **Format USB** / `format` uses the same disk safety checks as a bootable write
 - An ISO stored *on* the target USB is rejected so it is not deleted mid-write
 - The USB is re-checked immediately before erase, and must be larger than the ISO
 - Cancel after erase leaves a wiped stick

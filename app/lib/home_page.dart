@@ -20,6 +20,7 @@ class _HomePageState extends State<HomePage> {
   final _disks = DiskEnumerator();
   final _mounter = IsoMounter();
   final _writer = BootableWriter();
+  final _formatter = DiskFormatter();
   final _inspector = IsoInspector();
 
   List<UsbDisk> _usbDisks = [];
@@ -33,7 +34,7 @@ class _HomePageState extends State<HomePage> {
   bool _busy = false;
   bool _loadingDisks = true;
   bool _showAdvanced = false;
-  CancellationToken? _writeCancel;
+  CancellationToken? _opCancel;
 
   @override
   void initState() {
@@ -222,7 +223,7 @@ class _HomePageState extends State<HomePage> {
       _error = null;
       _progress = 0;
       _status = 'Starting…';
-      _writeCancel = token;
+      _opCancel = token;
     });
 
     try {
@@ -277,7 +278,88 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _busy = false;
-          _writeCancel = null;
+          _opCancel = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _formatUsb() async {
+    final disk = _selected;
+    if (disk == null) {
+      setState(() => _error = 'Plug in a USB drive and refresh the list.');
+      return;
+    }
+
+    final choice = await showDialog<_FormatChoice>(
+      context: context,
+      builder: (context) => _FormatDialog(disk: disk),
+    );
+    if (choice == null || !mounted) {
+      return;
+    }
+
+    final token = CancellationToken();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _progress = 0;
+      _status = 'Starting…';
+      _opCancel = token;
+    });
+
+    try {
+      await for (final event in _formatter.format(
+        FormatRequest(
+          disk: disk,
+          filesystem: choice.filesystem,
+          volumeLabel: choice.label,
+          confirmed: true,
+          allowAdvancedTargets: _showAdvanced,
+          cancellation: token,
+        ),
+      )) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _status = event.message;
+          _progress = event.percent;
+        });
+      }
+      await _refreshDisks();
+    } on WriteCancelledException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Cancelled.';
+        _progress = 0;
+      });
+    } on UsbIsoException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Stopped.';
+        _progress = 0;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.toString();
+        _status = 'Stopped.';
+        _progress = 0;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _opCancel = null;
         });
       }
     }
@@ -345,15 +427,26 @@ class _HomePageState extends State<HomePage> {
                   const SizedBox(height: 16),
                   _WarningBanner(disk: _selected, profile: _isoProfile),
                   const SizedBox(height: 20),
-                  FilledButton.icon(
-                    onPressed: _busy ? null : _makeBootable,
-                    icon: const Icon(Icons.usb),
-                    label: const Text('Make bootable USB'),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: _busy ? null : _makeBootable,
+                        icon: const Icon(Icons.usb),
+                        label: const Text('Make bootable USB'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _formatUsb,
+                        icon: const Icon(Icons.sd_card),
+                        label: const Text('Format USB'),
+                      ),
+                    ],
                   ),
                   if (_busy) ...[
                     const SizedBox(height: 12),
                     OutlinedButton.icon(
-                      onPressed: () => _writeCancel?.cancel(),
+                      onPressed: () => _opCancel?.cancel(),
                       icon: const Icon(Icons.stop),
                       label: const Text('Cancel'),
                     ),
@@ -399,7 +492,8 @@ class _Header extends StatelessWidget {
         ),
         SizedBox(height: 6),
         Text(
-          'Create a bootable USB from a Windows, Windows PE, or Linux live ISO.',
+          'Create a bootable USB from a Windows, Windows PE, or Linux live ISO, '
+          'or format a spare stick as FAT32, exFAT, or NTFS.',
           style: TextStyle(color: muted, fontSize: 15, height: 1.4),
         ),
       ],
@@ -724,6 +818,134 @@ class _EraseDialogState extends State<_EraseDialog> {
         FilledButton(
           onPressed: _understood ? () => Navigator.pop(context, true) : null,
           child: const Text('Erase and write'),
+        ),
+      ],
+    );
+  }
+}
+
+class _FormatChoice {
+  const _FormatChoice({required this.filesystem, required this.label});
+
+  final VolumeFilesystem filesystem;
+  final String label;
+}
+
+class _FormatDialog extends StatefulWidget {
+  const _FormatDialog({required this.disk});
+
+  final UsbDisk disk;
+
+  @override
+  State<_FormatDialog> createState() => _FormatDialogState();
+}
+
+class _FormatDialogState extends State<_FormatDialog> {
+  late final TextEditingController _label;
+  VolumeFilesystem _filesystem = VolumeFilesystem.fat32;
+  bool _understood = false;
+
+  List<VolumeFilesystem> get _options {
+    return [
+      VolumeFilesystem.fat32,
+      VolumeFilesystem.exfat,
+      if (!Platform.isMacOS) VolumeFilesystem.ntfs,
+    ];
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _label = TextEditingController(text: defaultVolumeLabel);
+  }
+
+  @override
+  void dispose() {
+    _label.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: slate800,
+      title: const Text('Format this USB drive?'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'All data on ${widget.disk.label} will be permanently deleted. '
+              'This does not install an operating system — it only formats the stick.',
+              style: const TextStyle(height: 1.4),
+            ),
+            if (widget.disk.isAdvancedTarget) ...[
+              const SizedBox(height: 12),
+              Text(
+                'This is a ${widget.disk.busProtocol} drive, not a regular USB stick.',
+                style: const TextStyle(height: 1.4, color: amber),
+              ),
+            ],
+            const SizedBox(height: 16),
+            DropdownButtonFormField<VolumeFilesystem>(
+              initialValue: _filesystem,
+              items: [
+                for (final fs in _options)
+                  DropdownMenuItem(value: fs, child: Text(fs.displayName)),
+              ],
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                setState(() => _filesystem = value);
+              },
+              decoration: const InputDecoration(labelText: 'Filesystem'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _filesystem == VolumeFilesystem.fat32
+                  ? 'FAT32 works on the most devices. Files cannot be 4 GB or larger.'
+                  : _filesystem == VolumeFilesystem.exfat
+                  ? 'exFAT supports large files and is a good default for data sticks.'
+                  : 'NTFS is native to Windows. macOS and some cameras may be read-only.',
+              style: const TextStyle(color: muted, fontSize: 13, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _label,
+              decoration: InputDecoration(
+                labelText: 'Volume name',
+                helperText:
+                    'Up to ${_filesystem.maxLabelLength} characters for ${_filesystem.displayName}.',
+              ),
+            ),
+            const SizedBox(height: 12),
+            CheckboxListTile(
+              value: _understood,
+              onChanged: (value) =>
+                  setState(() => _understood = value ?? false),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('I understand this cannot be undone'),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _understood
+              ? () => Navigator.pop(
+                  context,
+                  _FormatChoice(filesystem: _filesystem, label: _label.text),
+                )
+              : null,
+          child: const Text('Erase and format'),
         ),
       ],
     );

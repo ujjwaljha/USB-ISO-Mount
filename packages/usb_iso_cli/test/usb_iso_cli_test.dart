@@ -7,8 +7,12 @@ void main() {
     expect(await run(['--help']), 0);
   });
 
-  test('make without arguments is a usage error', () async {
-    expect(await run(['make']), 64);
+  test('format without a disk is a usage error', () async {
+    expect(await run(['format']), 64);
+  });
+
+  test('format help lists filesystem flags', () async {
+    expect(await run(['format', '--help']), 0);
   });
 
   test('rewrites a TTY write line and prints other steps once', () {
