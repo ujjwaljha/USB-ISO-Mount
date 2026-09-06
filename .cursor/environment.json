@@ -1,0 +1,4 @@
+{
+  "name": "USB ISO Mount",
+  "install": "bash .cursor/install.sh"
+}
