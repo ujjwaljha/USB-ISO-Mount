@@ -142,9 +142,8 @@ void main() {
 
     test('rejects a folder without install.wim or install.esd', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(
-        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
-      ).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
+          .writeAsBytesSync([1]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
       expect(info.installKind, WindowsInstallImageKind.none);
       expect(
@@ -155,9 +154,8 @@ void main() {
 
     test('accepts ARM EFI plus install.wim', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(
-        p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'),
-      ).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'))
+          .writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
       File(p.join(temp.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
@@ -167,13 +165,11 @@ void main() {
 
     test('accepts WinPE boot.wim', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(
-        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
-      ).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
+          .writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
-      File(
-        p.join(temp.path, 'sources', 'boot.wim'),
-      ).writeAsBytesSync([1, 2, 3]);
+      File(p.join(temp.path, 'sources', 'boot.wim'))
+          .writeAsBytesSync([1, 2, 3]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
       expect(info.installKind, WindowsInstallImageKind.bootWim);
       expect(() => WindowsIsoValidator().ensureValid(info), returnsNormally);
@@ -181,13 +177,11 @@ void main() {
 
     test('detects ESD images', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(
-        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
-      ).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
+          .writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
-      File(
-        p.join(temp.path, 'sources', 'install.esd'),
-      ).writeAsBytesSync([1, 2]);
+      File(p.join(temp.path, 'sources', 'install.esd'))
+          .writeAsBytesSync([1, 2]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
       expect(info.installKind, WindowsInstallImageKind.esd);
       expect(info.needsSplit, isFalse);
@@ -610,9 +604,8 @@ image-type      : read/write
       temp.deleteSync(recursive: true);
       temp.createSync();
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(
-        p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'),
-      ).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'))
+          .writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
       File(p.join(temp.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
       expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsArm);
@@ -620,9 +613,8 @@ image-type      : read/write
       temp.deleteSync(recursive: true);
       temp.createSync();
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(
-        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
-      ).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
+          .writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
       File(p.join(temp.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
       expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsPe);
@@ -1012,6 +1004,147 @@ image-type      : read/write
       );
     });
   });
+
+  group('VolumeFilesystem', () {
+    test('parses common names', () {
+      expect(parseVolumeFilesystem('FAT32'), VolumeFilesystem.fat32);
+      expect(parseVolumeFilesystem('ex-fat'), VolumeFilesystem.exfat);
+      expect(parseVolumeFilesystem('NTFS'), VolumeFilesystem.ntfs);
+    });
+
+    test('rejects unknown names', () {
+      expect(
+        () => parseVolumeFilesystem('ext4'),
+        throwsA(isA<UsbIsoException>()),
+      );
+    });
+
+    test('sanitizes and truncates labels', () {
+      expect(sanitizeVolumeLabel(' photos ', VolumeFilesystem.fat32), 'PHOTOS');
+      expect(
+        sanitizeVolumeLabel(
+          'this-is-a-very-long-label',
+          VolumeFilesystem.fat32,
+        ),
+        'THIS-IS-A-V',
+      );
+      expect(
+        sanitizeVolumeLabel('bad:name*', VolumeFilesystem.exfat),
+        'badname',
+      );
+      expect(sanitizeVolumeLabel('   ', VolumeFilesystem.ntfs), 'USB');
+    });
+
+    test('NTFS is unsupported on macOS', () {
+      expect(VolumeFilesystem.ntfs.isSupportedOn('macos'), isFalse);
+      expect(VolumeFilesystem.exfat.isSupportedOn('macos'), isTrue);
+      expect(VolumeFilesystem.ntfs.isSupportedOn('windows'), isTrue);
+    });
+  });
+
+  group('DiskFormatter', () {
+    test('refuses to format without confirmation', () async {
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      expect(
+        () =>
+            DiskFormatter(host: host)
+                .format(FormatRequest(disk: _usb()))
+                .toList(),
+        throwsA(isA<ConfirmationRequiredException>()),
+      );
+      expect(host.formatCalls, 0);
+    });
+
+    test('dry-run does not erase the disk', () async {
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      final events = await DiskFormatter(host: host)
+          .format(
+            FormatRequest(
+              disk: _usb(),
+              filesystem: VolumeFilesystem.exfat,
+              volumeLabel: 'Photos',
+              dryRun: true,
+            ),
+          )
+          .toList();
+      expect(host.formatCalls, 0);
+      expect(events.last.step, WriteStep.done);
+      expect(events.last.message, contains('Filesystem: exFAT'));
+      expect(events.last.message, contains('Label: Photos'));
+    });
+
+    test('formats after confirmation', () async {
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      final events = await DiskFormatter(host: host)
+          .format(
+            FormatRequest(
+              disk: _usb(),
+              filesystem: VolumeFilesystem.exfat,
+              volumeLabel: 'photos',
+              confirmed: true,
+            ),
+          )
+          .toList();
+      expect(host.formatCalls, 1);
+      expect(host.lastFormatFilesystem, VolumeFilesystem.exfat);
+      expect(host.lastFormatLabel, 'photos');
+      expect(events.last.step, WriteStep.done);
+      expect(events.last.message, contains('exFAT'));
+    });
+
+    test('uppercases a FAT32 volume label', () async {
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      await DiskFormatter(host: host)
+          .format(
+            FormatRequest(
+              disk: _usb(),
+              filesystem: VolumeFilesystem.fat32,
+              volumeLabel: 'photos',
+              confirmed: true,
+            ),
+          )
+          .toList();
+      expect(host.lastFormatLabel, 'PHOTOS');
+    });
+
+    test('rejects an internal disk', () async {
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      expect(
+        () => DiskFormatter(host: host)
+            .format(
+              FormatRequest(
+                disk: _usb(isInternal: true, bus: 'SATA'),
+                confirmed: true,
+              ),
+            )
+            .toList(),
+        throwsA(isA<UnsafeDiskException>()),
+      );
+      expect(host.formatCalls, 0);
+    });
+
+    test('mentions the Windows FAT32 size cap in dry-run', () {
+      expect(
+        dryRunFormatSummary(
+          disk: _usb(),
+          filesystem: VolumeFilesystem.fat32,
+          volumeLabel: 'USB',
+          windowsHost: true,
+        ),
+        contains('Windows FAT32 is limited'),
+      );
+    });
+  });
 }
 
 class FakeHost implements HostPlatform {
@@ -1021,9 +1154,12 @@ class FakeHost implements HostPlatform {
   int mountCalls = 0;
   int unmountCalls = 0;
   int eraseCalls = 0;
+  int formatCalls = 0;
   int rawWriteCalls = 0;
   Directory? destination;
   String? ejectError;
+  VolumeFilesystem? lastFormatFilesystem;
+  String? lastFormatLabel;
 
   @override
   Future<List<UsbDisk>> listUsbDisks({bool includeAdvanced = false}) async =>
@@ -1052,6 +1188,18 @@ class FakeHost implements HostPlatform {
     DiskLayout layout = DiskLayout.fat32,
   }) async {
     eraseCalls++;
+  }
+
+  @override
+  Future<void> formatDataVolume(
+    UsbDisk disk, {
+    required VolumeFilesystem filesystem,
+    String volumeLabel = defaultVolumeLabel,
+    bool allowAdvancedTargets = false,
+  }) async {
+    formatCalls++;
+    lastFormatFilesystem = filesystem;
+    lastFormatLabel = volumeLabel;
   }
 
   @override
@@ -1126,9 +1274,8 @@ void _writeWindowsLayout(Directory root, {required int wimBytes}) {
   Directory(p.join(root.path, 'efi', 'boot')).createSync(recursive: true);
   File(p.join(root.path, 'efi', 'boot', 'bootx64.efi')).writeAsBytesSync([1]);
   Directory(p.join(root.path, 'sources')).createSync();
-  File(
-    p.join(root.path, 'sources', 'install.wim'),
-  ).writeAsBytesSync(List<int>.filled(wimBytes, 7));
+  File(p.join(root.path, 'sources', 'install.wim'))
+      .writeAsBytesSync(List<int>.filled(wimBytes, 7));
 }
 
 void _writeLinuxLayout(Directory root) {

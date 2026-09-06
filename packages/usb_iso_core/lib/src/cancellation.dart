@@ -10,14 +10,15 @@ class CancellationToken {
     _cancelled = true;
   }
 
-  void throwIfCancelled({bool diskAlreadyErased = false}) {
+  void throwIfCancelled({bool diskAlreadyErased = false, String? message}) {
     if (!_cancelled) {
       return;
     }
     throw WriteCancelledException(
-      diskAlreadyErased
-          ? 'Write cancelled. The USB was erased and may not be bootable.'
-          : 'Write cancelled.',
+      message ??
+          (diskAlreadyErased
+              ? 'Write cancelled. The USB was erased and may not be bootable.'
+              : 'Write cancelled.'),
     );
   }
 }

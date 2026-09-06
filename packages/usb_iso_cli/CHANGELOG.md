@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- `format --disk` erases a USB and formats it as FAT32, exFAT, or NTFS
+
 ## 1.1.0
 
 - Detect Windows ARM, WinPE, and Linux ISOs

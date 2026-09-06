@@ -2,6 +2,7 @@ import 'cancellation.dart';
 import 'disk_layout.dart';
 import 'models/iso_mount.dart';
 import 'models/usb_disk.dart';
+import 'volume_filesystem.dart';
 
 typedef RawWriteProgress = void Function(int writtenBytes, int totalBytes);
 
@@ -22,6 +23,14 @@ abstract class HostPlatform {
   Future<void> eraseAndFormat(
     UsbDisk disk, {
     DiskLayout layout = DiskLayout.fat32,
+  });
+
+  /// Erase [disk] and create one GPT volume for data use (not a bootable ISO).
+  Future<void> formatDataVolume(
+    UsbDisk disk, {
+    required VolumeFilesystem filesystem,
+    String volumeLabel = defaultVolumeLabel,
+    bool allowAdvancedTargets = false,
   });
 
   Future<PreparedVolumes> waitForVolumeMount(

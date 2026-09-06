@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- Standalone USB format (FAT32, exFAT, NTFS) without writing an ISO
+
 ## 1.1.0
 
 - Classify Windows x64/ARM, WinPE, and Linux live ISOs
