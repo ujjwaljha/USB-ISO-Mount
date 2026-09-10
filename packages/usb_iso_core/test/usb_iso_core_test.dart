@@ -1387,6 +1387,43 @@ image-type      : read/write
       expect(volumes.dataMount, data.path);
       expect(planFromMultibootVolume(data.path).windows, isNotNull);
     });
+
+    test('refuses an add that will not fit on the stick', () {
+      final temp = Directory.systemTemp.createTempSync('usb_iso_space_');
+      addTearDown(() {
+        if (temp.existsSync()) {
+          temp.deleteSync(recursive: true);
+        }
+      });
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      Directory(p.join(data.path, 'isos')).createSync();
+      File(p.join(data.path, 'isos', 'ubuntu.iso')).writeAsBytesSync(
+        List<int>.filled(8 * 1024 * 1024, 1),
+      );
+      expect(volumeUsedBytes(data.path), greaterThan(0));
+      expect(
+        () => ensureMultibootAddFits(
+          diskSizeBytes: efiSystemPartitionBytes + 10 * 1024 * 1024,
+          dataMount: data.path,
+          incomingBytes: 4 * 1024 * 1024,
+        ),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('enough free space'),
+          ),
+        ),
+      );
+      expect(
+        () => ensureMultibootAddFits(
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+          dataMount: data.path,
+          incomingBytes: 4 * 1024 * 1024,
+        ),
+        returnsNormally,
+      );
+    });
   });
 
   group('BootableWriter.writeMulti', () {
@@ -1546,6 +1583,110 @@ image-type      : read/write
       expect(
         File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).readAsStringSync(),
         contains('mint.iso'),
+      );
+    });
+
+    test('add refuses when the USB is too small', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final extra = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'casper/vmlinuz': [1],
+            'casper/initrd': [2],
+          }),
+        );
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: extra.path, mountPath: linux.path),
+      );
+      final disk = UsbDisk(
+        id: 'disk70',
+        devicePath: '/dev/disk70',
+        name: 'Tiny',
+        sizeBytes: efiSystemPartitionBytes + 8 * 1024 * 1024,
+        busProtocol: 'USB',
+        isRemovable: true,
+        isInternal: false,
+        isBoot: false,
+        isVirtual: false,
+        mountPoints: [dest.path, data.path],
+      );
+      expect(
+        () => BootableWriter(host: host)
+            .addIso(
+              MultiAddRequest(isoPath: extra.path, disk: disk, dryRun: true),
+            )
+            .toList(),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('enough free space'),
+          ),
+        ),
+      );
+      expect(host.eraseCalls, 0);
+    });
+
+    test('add respects cancellation before copying', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final extra = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'casper/vmlinuz': [1],
+            'casper/initrd': [2],
+          }),
+        );
+      final host = FakeHost(
+        mount: IsoMount(isoPath: extra.path, mountPath: extra.path),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      final token = CancellationToken()..cancel();
+      expect(
+        () => BootableWriter(host: host)
+            .addIso(
+              MultiAddRequest(
+                isoPath: extra.path,
+                disk: disk,
+                confirmed: true,
+                cancellation: token,
+              ),
+            )
+            .toList(),
+        throwsA(isA<WriteCancelledException>()),
+      );
+      expect(File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(), isFalse);
+    });
+
+    test('refresh refuses a stick with no menu entries', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      Directory(p.join(dest.path, 'boot', 'grub')).createSync(recursive: true);
+      File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).writeAsStringSync(
+        'menuentry "empty" { reboot }\n',
+      );
+      Directory(p.join(data.path, 'isos')).createSync(recursive: true);
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      expect(
+        () => BootableWriter(
+          host: host,
+        ).refreshMenu(MultiRefreshRequest(disk: disk, dryRun: true)).toList(),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('No Windows Setup or Linux live ISOs'),
+          ),
+        ),
       );
     });
 

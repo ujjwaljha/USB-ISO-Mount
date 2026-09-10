@@ -35,6 +35,10 @@ Write-Host '  4. Elevated write: Win11 (FAT32+NTFS), then Ubuntu (raw ISO)'
 Write-Host '  5. Unelevated make --yes must print:'
 Write-Host '     Run this terminal as Administrator before writing a USB.'
 Write-Host '  6. flutter run -d windows  (UAC prompt expected)'
+Write-Host '  7. dart run usb_iso_cli make --iso <Win11.iso> --iso <ubuntu.iso> --disk <N> --dry-run'
+Write-Host '     Expect: multiIso, FAT32 EFIBOOT (GRUB) + exFAT ISOBOOT'
+Write-Host '  8. After a multiboot write: add --iso <fedora.iso> --disk <N> --dry-run'
+Write-Host '     Expect: no erase; then refresh --disk <N> --dry-run'
 Write-Host ''
 
 if (-not (Get-Command dart -ErrorAction SilentlyContinue)) {

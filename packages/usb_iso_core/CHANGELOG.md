@@ -7,6 +7,8 @@
 - Ubuntu/casper, Debian Live, Fedora, and Arch loop-boot entries
 - Add another ISO to an existing multiboot USB without erasing
 - Refresh the GRUB menu from `/isos` already on the stick
+- Refuse add when the stick does not have enough free space
+- Refuse refresh when no Windows Setup or Linux ISOs are on the stick
 
 ## 1.2.0
 

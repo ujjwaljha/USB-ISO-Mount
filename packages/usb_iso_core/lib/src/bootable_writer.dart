@@ -588,6 +588,7 @@ class BootableWriter {
     if (!File(request.isoPath).existsSync()) {
       throw InvalidIsoException('ISO not found: ${request.isoPath}');
     }
+    request.cancellation?.throwIfCancelled();
 
     yield const WriteProgress(
       step: WriteStep.validating,
@@ -625,6 +626,13 @@ class BootableWriter {
           'can add to the GRUB menu.',
         );
       }
+
+      request.cancellation?.throwIfCancelled();
+      ensureMultibootAddFits(
+        diskSizeBytes: request.disk.sizeBytes,
+        dataMount: volumes.dataMount!,
+        incomingBytes: File(request.isoPath).lengthSync(),
+      );
 
       if (request.dryRun) {
         yield WriteProgress(
@@ -675,13 +683,20 @@ class BootableWriter {
         );
       }
 
+      request.cancellation?.throwIfCancelled();
       yield const WriteProgress(
         step: WriteStep.verifying,
         message: 'Refreshing the GRUB menu…',
         percent: 0.85,
       );
       final plan = planFromMultibootVolume(volumes.dataMount!);
+      ensureMultibootPlanNotEmpty(plan);
       await _writeGrubMenu(volumes, plan);
+      _verifyMultiboot(
+        volumes: volumes,
+        plan: plan,
+        grubCfg: buildGrubConfig(plan),
+      );
       await _host.flushDisk(request.disk);
       yield const WriteProgress(
         step: WriteStep.done,
@@ -714,8 +729,10 @@ class BootableWriter {
       message: 'Reading the multiboot USB…',
       percent: 0.1,
     );
+    request.cancellation?.throwIfCancelled();
     final volumes = await _resolveMultibootVolumes(request.disk);
     final plan = planFromMultibootVolume(volumes.dataMount!);
+    ensureMultibootPlanNotEmpty(plan);
     if (request.dryRun) {
       yield WriteProgress(
         step: WriteStep.done,
@@ -727,12 +744,18 @@ class BootableWriter {
       );
       return;
     }
+    request.cancellation?.throwIfCancelled();
     yield const WriteProgress(
       step: WriteStep.copying,
       message: 'Writing the GRUB menu…',
       percent: 0.5,
     );
     await _writeGrubMenu(volumes, plan);
+    _verifyMultiboot(
+      volumes: volumes,
+      plan: plan,
+      grubCfg: buildGrubConfig(plan),
+    );
     await _host.flushDisk(request.disk);
     yield WriteProgress(
       step: WriteStep.done,

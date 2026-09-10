@@ -127,6 +127,7 @@ Code is complete; run this on a real Windows 10/11 PC before treating Windows as
 5. In an **unelevated** terminal, `make --yes` (not `--dry-run`) must refuse with the Administrator message.
 6. Elevated write: Win11 (FAT32+NTFS), then Ubuntu (raw). Confirm `file_picker` works in the GUI after UAC.
 7. `make --iso <Win11.iso> --iso <ubuntu.iso> --disk <N> --dry-run` — expect `multiIso` and `FAT32 EFIBOOT (GRUB) + exFAT ISOBOOT`.
+8. After a real multiboot write: `add --iso <fedora.iso> --disk <N> --dry-run` (no erase), then `refresh --disk <N> --dry-run`.
 
 Helper script (optional):
 

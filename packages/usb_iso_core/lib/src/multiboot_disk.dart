@@ -10,6 +10,9 @@ import 'models/iso_profile.dart';
 import 'models/windows_iso_info.dart';
 import 'multiboot_plan.dart';
 
+/// Headroom so an add is not packed flush against the disk size.
+const int multibootAddSlackBytes = 64 * 1024 * 1024;
+
 /// Finds already-mounted EFIBOOT + ISOBOOT volumes from [mountPoints].
 PreparedVolumes? detectMultibootMounts(Iterable<String> mountPoints) {
   String? boot;
@@ -170,4 +173,51 @@ MultiIsoPlan planFromMultibootVolume(String dataMount) {
   }
 
   return MultiIsoPlan(items: items, requiredBytes: 0);
+}
+
+/// Sum of regular files under [root] (used to estimate free space on ISOBOOT).
+int volumeUsedBytes(String root) {
+  final dir = Directory(root);
+  if (!dir.existsSync()) {
+    return 0;
+  }
+  var total = 0;
+  for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+    if (entity is File) {
+      try {
+        total += entity.lengthSync();
+      } catch (_) {
+        // Skip files that disappear mid-walk.
+      }
+    }
+  }
+  return total;
+}
+
+/// Throws if [incomingBytes] will not fit on the multiboot data volume.
+void ensureMultibootAddFits({
+  required int diskSizeBytes,
+  required String dataMount,
+  required int incomingBytes,
+}) {
+  final used = volumeUsedBytes(dataMount);
+  final usable = diskSizeBytes - efiSystemPartitionBytes;
+  final free = usable - used;
+  if (incomingBytes + multibootAddSlackBytes > free) {
+    throw UsbIsoException(
+      'This USB does not have enough free space for '
+      '${formatBytes(incomingBytes)}. About '
+      '${formatBytes(free < 0 ? 0 : free)} is left after the EFI partition '
+      'and files already on the stick.',
+    );
+  }
+}
+
+void ensureMultibootPlanNotEmpty(MultiIsoPlan plan) {
+  if (plan.items.isEmpty) {
+    throw UsbIsoException(
+      'No Windows Setup or Linux live ISOs were found on this USB. '
+      'Copy an image into /$multibootIsoFolder or add one with `add --iso`.',
+    );
+  }
 }
