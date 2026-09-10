@@ -84,6 +84,10 @@ void main() {
     await tester.scrollUntilVisible(find.text('Add ISO to this USB'), 200);
     expect(find.text('Add ISO to this USB'), findsOneWidget);
     expect(find.text('Refresh GRUB menu'), findsOneWidget);
+    expect(
+      find.textContaining('copies images without erasing'),
+      findsOneWidget,
+    );
 
     await tester.tap(find.text('Add ISO to this USB'));
     await tester.pumpAndSettle();

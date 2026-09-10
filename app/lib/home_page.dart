@@ -658,6 +658,7 @@ class _HomePageState extends State<HomePage> {
                     disk: _selected,
                     profile: _isos.length == 1 ? _isos.first.profile : null,
                     multiboot: _isos.length > 1,
+                    existingMultiboot: _selectedIsMultiboot,
                   ),
                   const SizedBox(height: 20),
                   Wrap(
@@ -963,11 +964,13 @@ class _WarningBanner extends StatelessWidget {
     required this.disk,
     this.profile,
     this.multiboot = false,
+    this.existingMultiboot = false,
   });
 
   final UsbDisk? disk;
   final IsoProfile? profile;
   final bool multiboot;
+  final bool existingMultiboot;
 
   @override
   Widget build(BuildContext context) {
@@ -976,7 +979,10 @@ class _WarningBanner extends StatelessWidget {
         !multiboot &&
         (profile?.kind == IsoKind.linuxHybrid ||
             profile?.kind == IsoKind.genericUefi);
-    final message = multiboot
+    final message = existingMultiboot
+        ? 'This stick already has a GRUB menu. Add ISO to this USB copies '
+              'images without erasing. Make bootable still wipes $target first.'
+        : multiboot
         ? 'This erases every partition on $target, then installs a GRUB menu '
               'so you can choose Windows Setup or a Linux live ISO at boot. '
               'Use a spare stick.'
