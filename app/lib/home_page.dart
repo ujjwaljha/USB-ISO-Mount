@@ -446,16 +446,12 @@ class _HomePageState extends State<HomePage> {
       setState(() => _error = 'Choose an ISO to add first.');
       return;
     }
-    if (_isos.length > 1) {
-      setState(
-        () => _error = 'Add one ISO at a time to an existing multiboot USB.',
-      );
-      return;
-    }
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) =>
-          _AddDialog(disk: disk, isoLabel: _isos.first.displayLabel),
+      builder: (context) => _AddDialog(
+        disk: disk,
+        isoLabels: [for (final iso in _isos) iso.displayLabel],
+      ),
     );
     if (confirmed != true || !mounted) {
       return;
@@ -469,24 +465,28 @@ class _HomePageState extends State<HomePage> {
       _opCancel = token;
     });
     try {
-      await for (final event in _writer.addIso(
-        MultiAddRequest(
-          isoPath: _isos.first.path,
-          disk: disk,
-          confirmed: true,
-          existingMount: _isos.first.mount,
-          allowAdvancedTargets: _showAdvanced,
-          cancellation: token,
-        ),
-      )) {
-        if (!mounted) {
-          return;
+      for (final iso in List<_SelectedIso>.from(_isos)) {
+        token.throwIfCancelled();
+        await for (final event in _writer.addIso(
+          MultiAddRequest(
+            isoPath: iso.path,
+            disk: disk,
+            confirmed: true,
+            existingMount: iso.mount,
+            allowAdvancedTargets: _showAdvanced,
+            cancellation: token,
+          ),
+        )) {
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            _status = event.message;
+            _progress = event.percent;
+          });
         }
-        setState(() {
-          _status = event.message;
-          _progress = event.percent;
-        });
       }
+      await _unmountQuietly();
       await _refreshDisks();
     } on WriteCancelledException catch (error) {
       if (!mounted) {
@@ -555,12 +555,30 @@ class _HomePageState extends State<HomePage> {
           _progress = event.percent;
         });
       }
+    } on WriteCancelledException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Cancelled.';
+        _progress = 0;
+      });
     } on UsbIsoException catch (error) {
       if (!mounted) {
         return;
       }
       setState(() {
         _error = error.message;
+        _status = 'Stopped.';
+        _progress = 0;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.toString();
         _status = 'Stopped.';
         _progress = 0;
       });
@@ -782,8 +800,8 @@ class _IsoCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Add one ISO for a single installer, or Windows plus Ubuntu '
-              '(and other Linux live images) for a boot menu on the same USB.',
+              'Add one ISO for a single installer, or several for a GRUB menu. '
+              'On an existing multiboot USB you can add more without erasing.',
               style: TextStyle(color: muted, fontSize: 13, height: 1.4),
             ),
             const SizedBox(height: 12),
@@ -1119,18 +1137,24 @@ class _EraseDialogState extends State<_EraseDialog> {
 }
 
 class _AddDialog extends StatelessWidget {
-  const _AddDialog({required this.disk, required this.isoLabel});
+  const _AddDialog({required this.disk, required this.isoLabels});
 
   final UsbDisk disk;
-  final String isoLabel;
+  final List<String> isoLabels;
 
   @override
   Widget build(BuildContext context) {
+    final names = isoLabels.map((label) => '• $label').join('\n');
     return AlertDialog(
       backgroundColor: slate800,
-      title: const Text('Add ISO to this USB?'),
+      title: Text(
+        isoLabels.length == 1
+            ? 'Add ISO to this USB?'
+            : 'Add ISOs to this USB?',
+      ),
       content: Text(
-        '$isoLabel will be copied onto ${disk.label}. '
+        '$names\n\n'
+        'will be copied onto ${disk.label}. '
         'The stick is not erased — existing Windows Setup and Linux ISOs stay.',
         style: const TextStyle(height: 1.4),
       ),

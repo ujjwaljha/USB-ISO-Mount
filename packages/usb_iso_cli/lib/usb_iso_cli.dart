@@ -311,7 +311,13 @@ class MakeCommand extends Command<int> {
 class AddCommand extends Command<int> {
   AddCommand() {
     argParser
-      ..addOption('iso', abbr: 'i', help: 'Path to a Windows or Linux ISO.')
+      ..addMultiOption(
+        'iso',
+        abbr: 'i',
+        help:
+            'Path to a Windows or Linux ISO. Repeat to add several without '
+            'erasing the stick.',
+      )
       ..addOption(
         'disk',
         abbr: 'd',
@@ -336,16 +342,16 @@ class AddCommand extends Command<int> {
 
   @override
   String get description =>
-      'Copy one more ISO onto an existing multiboot USB without erasing it.';
+      'Copy one or more ISOs onto an existing multiboot USB without erasing it.';
 
   @override
   Future<int> run() async {
-    final iso = argResults?['iso'] as String?;
+    final isos = List<String>.from(argResults?['iso'] as List? ?? const []);
     final diskArg = argResults?['disk'] as String?;
     final yes = argResults?['yes'] as bool? ?? false;
     final dryRun = argResults?['dry-run'] as bool? ?? false;
     final advanced = argResults?['advanced'] as bool? ?? false;
-    if (iso == null || iso.isEmpty) {
+    if (isos.isEmpty) {
       throw UsageException('Missing --iso', usage);
     }
     if (diskArg == null || diskArg.isEmpty) {
@@ -375,19 +381,23 @@ class AddCommand extends Command<int> {
       token.cancel();
     });
     try {
-      await for (final progress in BootableWriter().addIso(
-        MultiAddRequest(
-          isoPath: iso,
-          disk: disk,
-          confirmed: true,
-          dryRun: dryRun,
-          allowAdvancedTargets: advanced,
-          cancellation: token,
-        ),
-      )) {
-        printer.add(progress);
+      final writer = BootableWriter();
+      for (final iso in isos) {
+        stdout.writeln('Add: $iso');
+        await for (final progress in writer.addIso(
+          MultiAddRequest(
+            isoPath: iso,
+            disk: disk,
+            confirmed: true,
+            dryRun: dryRun,
+            allowAdvancedTargets: advanced,
+            cancellation: token,
+          ),
+        )) {
+          printer.add(progress);
+        }
+        printer.finish();
       }
-      printer.finish();
     } on WriteCancelledException catch (error) {
       printer.finish();
       stderr.writeln(error.message);

@@ -27,6 +27,7 @@ void main() {
     expect(await run(['refresh', '--help']), 0);
     final add = AddCommand();
     expect(add.description, contains('without erasing'));
+    expect(add.argParser.options['iso']!.help, contains('Repeat'));
     expect(add.argParser.options['yes']!.help, contains('ADD'));
     final refresh = RefreshCommand();
     expect(refresh.description, contains('GRUB'));
