@@ -16,6 +16,21 @@ import '../volume_filesystem.dart';
 
 const _volumeLabel = 'WINSETUP';
 
+/// `diskutil partitionDisk` arguments for a FAT32 ESP + exFAT ISO volume.
+List<String> macosEfiPlusExfatArgs(String diskId) {
+  return [
+    'partitionDisk',
+    diskId,
+    'GPT',
+    'EFI',
+    efiBootVolumeLabel,
+    '${efiSystemPartitionMiB}M',
+    'ExFAT',
+    isoBootVolumeLabel,
+    'R',
+  ];
+}
+
 /// Parses `diskutil info` JSON into a candidate USB disk, or null if unsafe.
 UsbDisk? usbDiskFromMacosInfo(
   Map<String, dynamic> info, {
@@ -348,6 +363,21 @@ class MacosHost implements HostPlatform {
         'The oversized installer image will be split for FAT32 instead.',
       );
     }
+    if (layout == DiskLayout.efiPlusExfat) {
+      final result = await _runner.run(
+        'diskutil',
+        macosEfiPlusExfatArgs(disk.id),
+        elevated: true,
+      );
+      if (!result.success) {
+        throw UsbIsoException(
+          'Failed to partition ${disk.id} as EFI+exFAT: '
+          '${result.stderr.trim().isEmpty ? result.stdout.trim() : result.stderr.trim()}',
+        );
+      }
+      await _runner.run('diskutil', ['mountDisk', disk.id]);
+      return;
+    }
     final result = await _runner.run('diskutil', [
       'eraseDisk',
       'FAT32',
@@ -395,31 +425,53 @@ class MacosHost implements HostPlatform {
     DiskLayout layout = DiskLayout.fat32,
   }) async {
     for (var i = 0; i < 40; i++) {
-      final volumes = Directory('/Volumes');
-      if (volumes.existsSync()) {
-        for (final entry in volumes.listSync()) {
-          if (entry is! Directory) {
-            continue;
-          }
-          final name = p.basename(entry.path);
-          if (!name.startsWith(_volumeLabel)) {
-            continue;
-          }
-          try {
-            final info = await _infoJson(entry.path);
-            if (asString(info['ParentWholeDisk']) == disk.id) {
-              return PreparedVolumes(bootMount: entry.path);
-            }
-          } on UsbIsoException {
-            continue;
-          }
+      if (layout == DiskLayout.efiPlusExfat) {
+        await _runner.run('diskutil', ['mountDisk', disk.id]);
+      }
+      if (isDualVolumeLayout(layout)) {
+        final bootLabel = bootVolumeLabelFor(layout);
+        final dataLabel = dataVolumeLabelFor(layout)!;
+        final boot = await _volumePathOnDisk(disk, bootLabel);
+        final data = await _volumePathOnDisk(disk, dataLabel);
+        if (boot != null && data != null) {
+          return PreparedVolumes(bootMount: boot, dataMount: data);
+        }
+      } else {
+        final boot = await _volumePathOnDisk(disk, _volumeLabel);
+        if (boot != null) {
+          return PreparedVolumes(bootMount: boot);
         }
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
     throw UsbIsoException(
-      'Timed out waiting for $_volumeLabel to appear on ${disk.id}.',
+      'Timed out waiting for ${isDualVolumeLayout(layout) ? '${bootVolumeLabelFor(layout)}/${dataVolumeLabelFor(layout)}' : _volumeLabel} to appear on ${disk.id}.',
     );
+  }
+
+  Future<String?> _volumePathOnDisk(UsbDisk disk, String label) async {
+    final volumes = Directory('/Volumes');
+    if (!volumes.existsSync()) {
+      return null;
+    }
+    for (final entry in volumes.listSync()) {
+      if (entry is! Directory) {
+        continue;
+      }
+      final name = p.basename(entry.path);
+      if (name != label && !name.startsWith(label)) {
+        continue;
+      }
+      try {
+        final info = await _infoJson(entry.path);
+        if (asString(info['ParentWholeDisk']) == disk.id) {
+          return entry.path;
+        }
+      } on UsbIsoException {
+        continue;
+      }
+    }
+    return null;
   }
 
   @override

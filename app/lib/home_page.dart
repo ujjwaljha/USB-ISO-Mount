@@ -25,9 +25,7 @@ class _HomePageState extends State<HomePage> {
 
   List<UsbDisk> _usbDisks = [];
   UsbDisk? _selected;
-  String? _isoPath;
-  IsoMount? _isoMount;
-  IsoProfile? _isoProfile;
+  final List<_SelectedIso> _isos = [];
   String? _error;
   String? _status;
   double? _progress;
@@ -80,39 +78,100 @@ class _HomePageState extends State<HomePage> {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['iso'],
-      dialogTitle: 'Choose an ISO image',
+      allowMultiple: true,
+      dialogTitle: 'Choose ISO images',
     );
-    final path = result?.files.single.path;
-    if (path == null) {
+    final paths = [
+      for (final file in result?.files ?? const <PlatformFile>[])
+        if (file.path != null) file.path!,
+    ];
+    if (paths.isEmpty) {
       return;
     }
-    await _unmountQuietly();
+    await _addIsoPaths(paths);
+  }
+
+  Future<void> _addIsoPaths(List<String> paths) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+      _status = 'Identifying ISO images…';
+    });
+    try {
+      for (final path in paths) {
+        if (_isos.any((iso) => pEquals(iso.path, path))) {
+          continue;
+        }
+        final item = _SelectedIso(path: path);
+        try {
+          final mount = await _mounter.mount(path);
+          item.mount = mount;
+          item.profile = _inspector.inspectMounted(mount.mountPath);
+        } on UsbIsoException catch (error) {
+          try {
+            item.profile = _inspector.inspectIsoFile(path);
+            item.mountError = error.message;
+          } on UsbIsoException catch (fileError) {
+            item.mountError = fileError.message;
+          }
+        }
+        _isos.add(item);
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _status = _isos.length > 1
+            ? '${_isos.length} ISO images selected. The USB will get a boot menu.'
+            : _isos.isEmpty
+            ? null
+            : 'ISO selected.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  Future<void> _removeIso(_SelectedIso item) async {
+    if (item.mount != null) {
+      try {
+        await _mounter.unmount(item.mount!);
+      } on UsbIsoException {
+        // Best-effort when removing an ISO.
+      }
+    }
     if (!mounted) {
       return;
     }
     setState(() {
-      _isoPath = path;
-      _isoProfile = null;
+      _isos.remove(item);
       _error = null;
     });
   }
 
+  bool pEquals(String a, String b) {
+    return File(a).absolute.path == File(b).absolute.path;
+  }
+
   Future<void> _unmountQuietly() async {
-    final mount = _isoMount;
-    if (mount == null) {
-      return;
+    for (final iso in _isos) {
+      final mount = iso.mount;
+      if (mount == null) {
+        continue;
+      }
+      try {
+        await _mounter.unmount(mount);
+      } on UsbIsoException {
+        // Best-effort when switching ISOs.
+      }
+      iso.mount = null;
     }
-    try {
-      await _mounter.unmount(mount);
-    } on UsbIsoException {
-      // Best-effort when switching ISOs.
-    }
-    _isoMount = null;
   }
 
   Future<void> _mountIso() async {
-    final iso = _isoPath;
-    if (iso == null) {
+    if (_isos.isEmpty) {
       setState(() => _error = 'Choose an ISO first.');
       return;
     }
@@ -122,47 +181,43 @@ class _HomePageState extends State<HomePage> {
       _status = 'Mounting ISO…';
     });
     try {
-      final mount = await _mounter.mount(iso);
-      final profile = _inspector.inspectMounted(mount.mountPath);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _isoMount = mount;
-        _isoProfile = profile;
-        _status = 'Mounted at ${mount.mountPath}';
-        if (profile.kind == IsoKind.unknown) {
-          _error = profile.unsupportedMessage;
+      for (final item in _isos) {
+        if (item.mount != null) {
+          continue;
         }
-      });
-    } on UsbIsoException catch (error) {
+        try {
+          final mount = await _mounter.mount(item.path);
+          item.mount = mount;
+          item.profile = _inspector.inspectMounted(mount.mountPath);
+          item.mountError = null;
+        } on UsbIsoException catch (error) {
+          try {
+            item.profile = _inspector.inspectIsoFile(item.path);
+            item.mountError = error.message;
+          } on UsbIsoException {
+            item.mountError = error.message;
+          }
+        }
+      }
       if (!mounted) {
         return;
       }
-      try {
-        final profile = _inspector.inspectIsoFile(iso);
-        final strategy = LayoutChooser.strategyFor(
-          profile: profile,
-          windowsHost: Platform.isWindows,
-          diskSizeBytes: _selected?.sizeBytes ?? 0,
-          isoLooksHybrid: isoLooksLikeHybridDisk(iso),
-        );
-        setState(() {
-          _isoMount = null;
-          _isoProfile = profile;
-          _status = strategy == WriteStrategy.rawHybrid
-              ? 'Could not mount as a volume (typical for hybrid Linux ISOs). '
-                    'The write will raw-copy the ISO to the USB.'
-              : 'Could not mount as a volume.';
-          _error = profile.kind == IsoKind.unknown ? error.message : null;
-        });
-      } on UsbIsoException {
-        setState(() {
-          _error = error.message;
-          _status = 'Mount failed.';
-          _progress = 0;
-        });
-      }
+      final unknown = _isos.where(
+        (iso) => iso.profile?.kind == IsoKind.unknown,
+      );
+      setState(() {
+        _status = _isos.length > 1
+            ? 'Identified ${_isos.length} ISO images.'
+            : _isos.first.mount != null
+            ? 'Mounted at ${_isos.first.mount!.mountPath}'
+            : _isos.first.profile?.kind == IsoKind.linuxHybrid
+            ? 'Could not mount as a volume (typical for hybrid Linux ISOs). '
+                  'A single-ISO write will raw-copy the image.'
+            : 'Could not mount as a volume.';
+        _error = unknown.isEmpty
+            ? null
+            : unknown.first.profile?.unsupportedMessage;
+      });
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -171,25 +226,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _unmountIso() async {
-    final mount = _isoMount;
-    if (mount == null) {
-      return;
-    }
     setState(() => _busy = true);
     try {
-      await _mounter.unmount(mount);
+      await _unmountQuietly();
       if (!mounted) {
         return;
       }
-      setState(() {
-        _isoMount = null;
-        _status = 'ISO unmounted.';
-      });
-    } on UsbIsoException catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _error = error.message);
+      setState(() => _status = 'ISO unmounted.');
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -198,9 +241,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _makeBootable() async {
-    final iso = _isoPath;
     final disk = _selected;
-    if (iso == null) {
+    if (_isos.isEmpty) {
       setState(() => _error = 'Choose an ISO first.');
       return;
     }
@@ -211,7 +253,13 @@ class _HomePageState extends State<HomePage> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => _EraseDialog(disk: disk, profile: _isoProfile),
+      builder: (context) => _EraseDialog(
+        disk: disk,
+        profile: _isos.length == 1 ? _isos.first.profile : null,
+        multibootTitles: _isos.length > 1
+            ? [for (final iso in _isos) iso.displayLabel]
+            : const [],
+      ),
     );
     if (confirmed != true || !mounted) {
       return;
@@ -227,16 +275,31 @@ class _HomePageState extends State<HomePage> {
     });
 
     try {
-      await for (final event in _writer.write(
-        WriteRequest(
-          isoPath: iso,
-          disk: disk,
-          confirmed: true,
-          existingMount: _isoMount,
-          allowAdvancedTargets: _showAdvanced,
-          cancellation: token,
-        ),
-      )) {
+      final stream = _isos.length == 1
+          ? _writer.write(
+              WriteRequest(
+                isoPath: _isos.first.path,
+                disk: disk,
+                confirmed: true,
+                existingMount: _isos.first.mount,
+                allowAdvancedTargets: _showAdvanced,
+                cancellation: token,
+              ),
+            )
+          : _writer.writeMulti(
+              MultiWriteRequest(
+                isoPaths: [for (final iso in _isos) iso.path],
+                disk: disk,
+                confirmed: true,
+                existingMounts: {
+                  for (final iso in _isos)
+                    if (iso.mount != null) iso.path: iso.mount!,
+                },
+                allowAdvancedTargets: _showAdvanced,
+                cancellation: token,
+              ),
+            );
+      await for (final event in stream) {
         if (!mounted) {
           return;
         }
@@ -366,16 +429,19 @@ class _HomePageState extends State<HomePage> {
   }
 
   String? get _writeLayoutLine {
-    final profile = _isoProfile;
-    final iso = _isoPath;
-    if (profile == null) {
+    if (_isos.length > 1) {
+      return 'Layout: GRUB menu, FAT32 EFIBOOT + exFAT ISOBOOT '
+          '(Windows Setup at the volume root, Linux ISOs in /isos)';
+    }
+    if (_isos.isEmpty || _isos.first.profile == null) {
       return null;
     }
+    final profile = _isos.first.profile!;
     final strategy = LayoutChooser.strategyFor(
       profile: profile,
       windowsHost: Platform.isWindows,
       diskSizeBytes: _selected?.sizeBytes ?? 0,
-      isoLooksHybrid: iso != null && isoLooksLikeHybridDisk(iso),
+      isoLooksHybrid: isoLooksLikeHybridDisk(_isos.first.path),
     );
     return profile.layoutSummary(strategy);
   }
@@ -401,14 +467,13 @@ class _HomePageState extends State<HomePage> {
                   const _Header(),
                   const SizedBox(height: 24),
                   _IsoCard(
-                    isoPath: _isoPath,
-                    summary: _isoProfile?.summary,
+                    isos: _isos,
                     layout: _writeLayoutLine,
-                    mounted: _isoMount != null,
                     busy: _busy,
                     onBrowse: _pickIso,
                     onMount: _mountIso,
                     onUnmount: _unmountIso,
+                    onRemove: _removeIso,
                   ),
                   const SizedBox(height: 16),
                   _UsbCard(
@@ -425,7 +490,11 @@ class _HomePageState extends State<HomePage> {
                     onRefresh: _refreshDisks,
                   ),
                   const SizedBox(height: 16),
-                  _WarningBanner(disk: _selected, profile: _isoProfile),
+                  _WarningBanner(
+                    disk: _selected,
+                    profile: _isos.length == 1 ? _isos.first.profile : null,
+                    multiboot: _isos.length > 1,
+                  ),
                   const SizedBox(height: 20),
                   Wrap(
                     spacing: 10,
@@ -434,7 +503,11 @@ class _HomePageState extends State<HomePage> {
                       FilledButton.icon(
                         onPressed: _busy ? null : _makeBootable,
                         icon: const Icon(Icons.usb),
-                        label: const Text('Make bootable USB'),
+                        label: Text(
+                          _isos.length > 1
+                              ? 'Make multiboot USB'
+                              : 'Make bootable USB',
+                        ),
                       ),
                       OutlinedButton.icon(
                         onPressed: _busy ? null : _formatUsb,
@@ -492,8 +565,9 @@ class _Header extends StatelessWidget {
         ),
         SizedBox(height: 6),
         Text(
-          'Create a bootable USB from a Windows, Windows PE, or Linux live ISO, '
-          'or format a spare stick as FAT32, exFAT, or NTFS.',
+          'Create a bootable USB from a Windows, Windows PE, or Linux live ISO. '
+          'Add both Windows and Ubuntu to get a GRUB menu on the same stick, '
+          'or format a spare drive as FAT32, exFAT, or NTFS.',
           style: TextStyle(color: muted, fontSize: 15, height: 1.4),
         ),
       ],
@@ -501,29 +575,43 @@ class _Header extends StatelessWidget {
   }
 }
 
+class _SelectedIso {
+  _SelectedIso({required this.path});
+
+  final String path;
+  IsoProfile? profile;
+  IsoMount? mount;
+  String? mountError;
+
+  String get displayLabel {
+    final name = path.split(RegExp(r'[/\\]')).last;
+    final kind = profile?.kindLabel;
+    return kind == null ? name : '$name — $kind';
+  }
+}
+
 class _IsoCard extends StatelessWidget {
   const _IsoCard({
-    required this.isoPath,
-    required this.summary,
+    required this.isos,
     required this.layout,
-    required this.mounted,
     required this.busy,
     required this.onBrowse,
     required this.onMount,
     required this.onUnmount,
+    required this.onRemove,
   });
 
-  final String? isoPath;
-  final String? summary;
+  final List<_SelectedIso> isos;
   final String? layout;
-  final bool mounted;
   final bool busy;
   final VoidCallback onBrowse;
   final VoidCallback onMount;
   final VoidCallback onUnmount;
+  final ValueChanged<_SelectedIso> onRemove;
 
   @override
   Widget build(BuildContext context) {
+    final mounted = isos.any((iso) => iso.mount != null);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -531,24 +619,51 @@ class _IsoCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'ISO image',
+              'ISO images',
               style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
             ),
-            const SizedBox(height: 12),
-            Text(
-              isoPath ?? 'No ISO selected',
-              style: TextStyle(
-                color: isoPath == null ? muted : ink,
-                fontSize: 13,
-              ),
+            const SizedBox(height: 8),
+            const Text(
+              'Add one ISO for a single installer, or Windows plus Ubuntu '
+              '(and other Linux live images) for a boot menu on the same USB.',
+              style: TextStyle(color: muted, fontSize: 13, height: 1.4),
             ),
-            if (summary != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                summary!,
-                style: const TextStyle(color: muted, fontSize: 13),
-              ),
-            ],
+            const SizedBox(height: 12),
+            if (isos.isEmpty)
+              const Text(
+                'No ISO selected',
+                style: TextStyle(color: muted, fontSize: 13),
+              )
+            else
+              for (final iso in isos) ...[
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: Text(
+                    iso.displayLabel,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  subtitle: iso.profile == null
+                      ? (iso.mountError == null
+                            ? null
+                            : Text(
+                                iso.mountError!,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: muted,
+                                ),
+                              ))
+                      : Text(
+                          iso.profile!.summary,
+                          style: const TextStyle(fontSize: 12, color: muted),
+                        ),
+                  trailing: IconButton(
+                    tooltip: 'Remove ISO',
+                    onPressed: busy ? null : () => onRemove(iso),
+                    icon: const Icon(Icons.close, size: 18),
+                  ),
+                ),
+              ],
             if (layout != null) ...[
               const SizedBox(height: 6),
               Text(layout!, style: const TextStyle(color: muted, fontSize: 13)),
@@ -561,11 +676,13 @@ class _IsoCard extends StatelessWidget {
                 OutlinedButton.icon(
                   onPressed: busy ? null : onBrowse,
                   icon: const Icon(Icons.folder_open, size: 18),
-                  label: const Text('Browse…'),
+                  label: Text(isos.isEmpty ? 'Browse…' : 'Add ISO…'),
                 ),
                 OutlinedButton(
-                  onPressed: busy ? null : (mounted ? onUnmount : onMount),
-                  child: Text(mounted ? 'Unmount ISO' : 'Mount ISO'),
+                  onPressed: busy || isos.isEmpty
+                      ? null
+                      : (mounted ? onUnmount : onMount),
+                  child: Text(mounted ? 'Unmount ISO' : 'Identify ISOs'),
                 ),
               ],
             ),
@@ -666,18 +783,28 @@ class _UsbCard extends StatelessWidget {
 }
 
 class _WarningBanner extends StatelessWidget {
-  const _WarningBanner({required this.disk, this.profile});
+  const _WarningBanner({
+    required this.disk,
+    this.profile,
+    this.multiboot = false,
+  });
 
   final UsbDisk? disk;
   final IsoProfile? profile;
+  final bool multiboot;
 
   @override
   Widget build(BuildContext context) {
     final target = disk == null ? 'the selected USB drive' : disk!.label;
     final raw =
-        profile?.kind == IsoKind.linuxHybrid ||
-        profile?.kind == IsoKind.genericUefi;
-    final message = raw
+        !multiboot &&
+        (profile?.kind == IsoKind.linuxHybrid ||
+            profile?.kind == IsoKind.genericUefi);
+    final message = multiboot
+        ? 'This erases every partition on $target, then installs a GRUB menu '
+              'so you can choose Windows Setup or a Linux live ISO at boot. '
+              'Use a spare stick.'
+        : raw
         ? 'This overwrites every partition on $target with the ISO image '
               '(typical for a Linux live USB). Use a spare stick.'
         : 'Make Bootable erases every file on $target. '
@@ -763,10 +890,15 @@ class _ErrorCard extends StatelessWidget {
 }
 
 class _EraseDialog extends StatefulWidget {
-  const _EraseDialog({required this.disk, this.profile});
+  const _EraseDialog({
+    required this.disk,
+    this.profile,
+    this.multibootTitles = const [],
+  });
 
   final UsbDisk disk;
   final IsoProfile? profile;
+  final List<String> multibootTitles;
 
   @override
   State<_EraseDialog> createState() => _EraseDialogState();
@@ -785,8 +917,12 @@ class _EraseDialogState extends State<_EraseDialog> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            widget.profile?.kind == IsoKind.linuxHybrid ||
-                    widget.profile?.kind == IsoKind.genericUefi
+            widget.multibootTitles.isNotEmpty
+                ? 'All data on ${widget.disk.label} will be permanently deleted, '
+                      'then replaced with a GRUB boot menu for:\n'
+                      '${widget.multibootTitles.map((title) => '• $title').join('\n')}'
+                : widget.profile?.kind == IsoKind.linuxHybrid ||
+                      widget.profile?.kind == IsoKind.genericUefi
                 ? 'All data on ${widget.disk.label} will be permanently deleted, '
                       'then overwritten with the ISO image.'
                 : 'All data on ${widget.disk.label} will be permanently deleted, '

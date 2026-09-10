@@ -15,6 +15,10 @@ void main() {
     expect(await run(['format', '--help']), 0);
   });
 
+  test('make help mentions repeating --iso for multiboot', () async {
+    expect(await run(['make', '--help']), 0);
+  });
+
   test('rewrites a TTY write line and prints other steps once', () {
     final buffer = StringBuffer();
     final printer = CliProgressWriter(sink: buffer, tty: true);

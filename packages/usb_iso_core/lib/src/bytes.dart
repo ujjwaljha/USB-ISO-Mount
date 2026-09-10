@@ -10,6 +10,17 @@ const int windowsFat32PartitionMaxBytes = 30 * 1024 * 1024 * 1024;
 /// FAT32 boot partition for dual-layout Windows USBs (fits `boot.wim` + EFI).
 const int windowsFat32BootPartitionBytes = 3584 * 1024 * 1024;
 
+/// FAT32 EFI System Partition for multiboot USBs (GRUB only).
+const int efiSystemPartitionMiB = 512;
+const int efiSystemPartitionBytes = efiSystemPartitionMiB * 1024 * 1024;
+
+/// Volume labels for the multiboot GPT layout.
+const String efiBootVolumeLabel = 'EFIBOOT';
+const String isoBootVolumeLabel = 'ISOBOOT';
+
+/// Folder on the exFAT data volume that holds Linux live ISOs.
+const String multibootIsoFolder = 'isos';
+
 /// Raw ISO writes use large blocks so `/dev/rdisk` and PhysicalDrive stay sequential.
 const int rawWriteChunkBytes = 8 * 1024 * 1024;
 

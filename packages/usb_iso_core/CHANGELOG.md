@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+- Multiboot USB: GRUB menu on FAT32 `EFIBOOT` + exFAT `ISOBOOT`
+- One Windows installer (extracted to the data volume root) plus Linux live ISOs in `/isos`
+- Ubuntu/casper, Debian Live, Fedora, and Arch loop-boot entries
+
 ## 1.2.0
 
 - Standalone USB format (FAT32, exFAT, NTFS) without writing an ISO

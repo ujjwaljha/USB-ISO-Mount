@@ -1,6 +1,6 @@
 # USB ISO Mount
 
-Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linux live ISO. You can also **format a spare USB** as FAT32, exFAT, or NTFS without writing an ISO.
+Create a **bootable USB** from a Windows 10/11 (x64 or ARM), Windows PE, or Linux live ISO. Put **Windows and Ubuntu on the same stick** (a GRUB menu lets you pick which one to install). You can also **format a spare USB** as FAT32, exFAT, or NTFS without writing an ISO.
 
 **Supported (CLI and GUI):** macOS and Windows.  
 **Best-effort CLI only:** Linux (no Flutter desktop target).  
@@ -44,10 +44,10 @@ flutter run -d macos
 # or: flutter run -d windows
 ```
 
-1. Browse to an `.iso`
+1. Browse to one or more `.iso` files (add both Windows and Ubuntu for a multiboot stick)
 2. Choose a USB drive (refresh if you just plugged it in)
-3. Optionally **Mount ISO** to inspect the type (Windows x64/ARM, WinPE, Linux). Hybrid Linux images typically fail to mount; the app will say it will **raw-copy** instead.
-4. Click **Make bootable USB** and confirm the erase warning
+3. Optionally **Identify ISOs** to inspect the type (Windows x64/ARM, WinPE, Linux). Hybrid Linux images typically fail to mount; a single Linux ISO is **raw-copied** instead
+4. Click **Make bootable USB** (or **Make multiboot USB** when two or more images are selected) and confirm the erase warning
 5. **Cancel** stops a write; if the disk was already erased it will not be bootable
 
 To wipe a stick without an ISO, choose the USB drive, click **Format USB**, pick FAT32 / exFAT / NTFS and a volume name, then confirm. This erases the drive and leaves a normal data volume (not a bootable installer). NTFS is offered on Windows only.
@@ -64,6 +64,7 @@ dart run usb_iso_cli list
 dart run usb_iso_cli list --advanced
 dart run usb_iso_cli mount --iso ~/Downloads/Win11.iso
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --dry-run
+dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --iso ~/Downloads/ubuntu.iso --disk disk4 --dry-run
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --yes
 dart run usb_iso_cli format --disk disk4 --fs exfat --label PHOTOS --dry-run
 dart run usb_iso_cli format --disk disk4 --fs fat32 --yes
@@ -84,6 +85,7 @@ sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
 | `mount --iso <file>` | Mount the ISO and print its detected type |
 | `unmount --iso <file>` | Unmount the ISO |
 | `make --iso <file> --disk <id>` | Erase the USB and write the image |
+| `make --iso <win> --iso <ubuntu> --disk <id>` | Multiboot USB (GRUB menu) |
 | `make … --dry-run` | Validate without writing |
 | `make … --yes` | Skip the interactive `ERASE` prompt |
 | `make … --advanced` | Allow an SD / Thunderbolt target |
@@ -104,7 +106,7 @@ The ISO is classified first (do **not** treat a hybrid MBR as Linux by itself �
    - macOS / Linux: split the image to `install.swm` with wimlib
 2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style). On macOS, `authopen` writes `/dev/rdiskN`. On Windows, the disk is taken **offline** for an exclusive write to `\\.\PhysicalDriveN`.
 3. **Generic UEFI** — file-copy, or raw write if the ISO file itself looks like a hybrid disk image
-4. **Multi-ISO** — reserved; not implemented (no Ventoy)
+4. **Multi-ISO (two or more `--iso` / Add ISO)** — GPT with a small FAT32 EFI partition (`EFIBOOT`, GRUB) and an exFAT data partition (`ISOBOOT`). One Windows installer is extracted to the data volume root so Setup finds `\\sources`. Linux live ISOs are copied to `/isos` and loop-booted (Ubuntu/casper, Debian Live, Fedora, Arch). At firmware boot you pick an entry from the GRUB menu. This is closer to WinSetupFromUSB/Easy2Boot than to Ventoy: the menu is generated when the stick is written (adding more ISOs later means writing again). Only one Windows installer is supported, because Windows Setup looks for `\\sources` at the volume root.
 
 After a file-copy or raw write the volume is flushed and a light verify runs (EFI / installer size, or bytes written). A failed eject after a successful write is reported as a warning, not a failed write.
 
@@ -118,6 +120,7 @@ Code is complete; run this on a real Windows 10/11 PC before treating Windows as
 4. `dart run usb_iso_cli make --iso <ubuntu.iso> --disk <N> --dry-run` — expect `rawHybrid`. Mount-DiskImage may fail; that is normal.
 5. In an **unelevated** terminal, `make --yes` (not `--dry-run`) must refuse with the Administrator message.
 6. Elevated write: Win11 (FAT32+NTFS), then Ubuntu (raw). Confirm `file_picker` works in the GUI after UAC.
+7. `make --iso <Win11.iso> --iso <ubuntu.iso> --disk <N> --dry-run` — expect `multiIso` and `FAT32 EFIBOOT (GRUB) + exFAT ISOBOOT`.
 
 Helper script (optional):
 
@@ -129,7 +132,7 @@ powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
 ## Repository layout
 
 - [`app/`](app/) — Flutter desktop GUI (macOS and Windows)
-- [`packages/usb_iso_core`](packages/usb_iso_core/) — USB detection, ISO mount, write pipeline
+- [`packages/usb_iso_core`](packages/usb_iso_core/) — USB detection, ISO mount, write pipeline (includes a GPLv3 GRUB EFI image under `lib/src/assets/grub/`)
 - [`packages/usb_iso_cli`](packages/usb_iso_cli/) — `usb_iso` CLI (macOS, Windows; Linux best-effort)
 
 ## Safety
@@ -144,4 +147,4 @@ powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
 - The USB is re-checked immediately before erase, and must be larger than the ISO
 - Cancel after erase leaves a wiped stick
 
-This project does not download Windows from Microsoft and does not create macOS installer USBs. Multi-ISO / Ventoy-style sticks are not implemented.
+This project does not download Windows from Microsoft and does not create macOS installer USBs. Multiboot sticks are UEFI-only and are not a full Ventoy clone (no “copy ISOs later and they appear automatically”).

@@ -188,7 +188,13 @@ class UnmountCommand extends Command<int> {
 class MakeCommand extends Command<int> {
   MakeCommand() {
     argParser
-      ..addOption('iso', abbr: 'i', help: 'Path to a Windows or Linux ISO.')
+      ..addMultiOption(
+        'iso',
+        abbr: 'i',
+        help:
+            'Path to a Windows or Linux ISO. Repeat for a multiboot USB '
+            '(Windows + Ubuntu on the same stick).',
+      )
       ..addOption(
         'disk',
         abbr: 'd',
@@ -217,17 +223,18 @@ class MakeCommand extends Command<int> {
 
   @override
   String get description =>
-      'Erase a USB drive and write a bootable Windows or Linux image.';
+      'Erase a USB drive and write a bootable Windows or Linux image, '
+      'or a multiboot stick from two or more --iso values.';
 
   @override
   Future<int> run() async {
-    final iso = argResults?['iso'] as String?;
+    final isos = List<String>.from(argResults?['iso'] as List? ?? const []);
     final diskArg = argResults?['disk'] as String?;
     final yes = argResults?['yes'] as bool? ?? false;
     final dryRun = argResults?['dry-run'] as bool? ?? false;
     final advanced = argResults?['advanced'] as bool? ?? false;
 
-    if (iso == null || iso.isEmpty) {
+    if (isos.isEmpty) {
       throw UsageException('Missing --iso', usage);
     }
     if (diskArg == null || diskArg.isEmpty) {
@@ -262,16 +269,29 @@ class MakeCommand extends Command<int> {
       token.cancel();
     });
     try {
-      await for (final progress in BootableWriter().write(
-        WriteRequest(
-          isoPath: iso,
-          disk: disk,
-          confirmed: true,
-          dryRun: dryRun,
-          allowAdvancedTargets: advanced,
-          cancellation: token,
-        ),
-      )) {
+      final writer = BootableWriter();
+      final stream = isos.length == 1
+          ? writer.write(
+              WriteRequest(
+                isoPath: isos.single,
+                disk: disk,
+                confirmed: true,
+                dryRun: dryRun,
+                allowAdvancedTargets: advanced,
+                cancellation: token,
+              ),
+            )
+          : writer.writeMulti(
+              MultiWriteRequest(
+                isoPaths: isos,
+                disk: disk,
+                confirmed: true,
+                dryRun: dryRun,
+                allowAdvancedTargets: advanced,
+                cancellation: token,
+              ),
+            );
+      await for (final progress in stream) {
         printer.add(progress);
       }
       printer.finish();
