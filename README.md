@@ -49,6 +49,7 @@ flutter run -d macos
 3. Optionally **Identify ISOs** to inspect the type (Windows x64/ARM, WinPE, Linux). Hybrid Linux images typically fail to mount; a single Linux ISO is **raw-copied** instead
 4. Click **Make bootable USB** (or **Make multiboot USB** when two or more images are selected) and confirm the erase warning
 5. **Cancel** stops a write; if the disk was already erased it will not be bootable
+6. After a multiboot stick exists, select it to use **Add ISO to this USB** (copy one more image without erasing) or **Refresh GRUB menu** (rebuild the menu from `/isos`)
 
 To wipe a stick without an ISO, choose the USB drive, click **Format USB**, pick FAT32 / exFAT / NTFS and a volume name, then confirm. This erases the drive and leaves a normal data volume (not a bootable installer). NTFS is offered on Windows only.
 
@@ -66,6 +67,8 @@ dart run usb_iso_cli mount --iso ~/Downloads/Win11.iso
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --dry-run
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --iso ~/Downloads/ubuntu.iso --disk disk4 --dry-run
 dart run usb_iso_cli make --iso ~/Downloads/Win11.iso --disk disk4 --yes
+dart run usb_iso_cli add --iso ~/Downloads/fedora.iso --disk disk4 --dry-run
+dart run usb_iso_cli refresh --disk disk4 --dry-run
 dart run usb_iso_cli format --disk disk4 --fs exfat --label PHOTOS --dry-run
 dart run usb_iso_cli format --disk disk4 --fs fat32 --yes
 ```
@@ -87,6 +90,7 @@ sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
 | `make --iso <file> --disk <id>` | Erase the USB and write the image |
 | `make --iso <win> --iso <ubuntu> --disk <id>` | Multiboot USB (GRUB menu) |
 | `add --iso <file> --disk <id>` | Copy one more ISO onto an existing multiboot USB (no erase) |
+| `add … --yes` | Skip the interactive `ADD` prompt |
 | `refresh --disk <id>` | Rebuild the GRUB menu from `/isos` and Windows Setup already on the stick |
 | `make … --dry-run` | Validate without writing |
 | `make … --yes` | Skip the interactive `ERASE` prompt |
@@ -97,7 +101,7 @@ sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
 | `format … --dry-run` | Validate without formatting |
 | `format … --yes` | Skip the interactive `ERASE` prompt |
 
-Without `--yes`, `make` and `format` ask you to type `ERASE`. Non-interactive sessions require `--yes`. macOS cannot format NTFS; use FAT32 or exFAT there.
+Without `--yes`, `make` and `format` ask you to type `ERASE`; `add` asks for `ADD`. Non-interactive sessions require `--yes`. macOS cannot format NTFS; use FAT32 or exFAT there.
 
 ## How the write works
 
