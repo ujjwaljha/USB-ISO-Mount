@@ -86,6 +86,8 @@ sudo dart run usb_iso_cli make --iso ~/Downloads/ubuntu.iso --disk sda --yes
 | `unmount --iso <file>` | Unmount the ISO |
 | `make --iso <file> --disk <id>` | Erase the USB and write the image |
 | `make --iso <win> --iso <ubuntu> --disk <id>` | Multiboot USB (GRUB menu) |
+| `add --iso <file> --disk <id>` | Copy one more ISO onto an existing multiboot USB (no erase) |
+| `refresh --disk <id>` | Rebuild the GRUB menu from `/isos` and Windows Setup already on the stick |
 | `make … --dry-run` | Validate without writing |
 | `make … --yes` | Skip the interactive `ERASE` prompt |
 | `make … --advanced` | Allow an SD / Thunderbolt target |
@@ -106,7 +108,7 @@ The ISO is classified first (do **not** treat a hybrid MBR as Linux by itself �
    - macOS / Linux: split the image to `install.swm` with wimlib
 2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style). On macOS, `authopen` writes `/dev/rdiskN`. On Windows, the disk is taken **offline** for an exclusive write to `\\.\PhysicalDriveN`.
 3. **Generic UEFI** — file-copy, or raw write if the ISO file itself looks like a hybrid disk image
-4. **Multi-ISO (two or more `--iso` / Add ISO)** — GPT with a small FAT32 EFI partition (`EFIBOOT`, GRUB) and an exFAT data partition (`ISOBOOT`). One Windows installer is extracted to the data volume root so Setup finds `\\sources`. Linux live ISOs are copied to `/isos` and loop-booted (Ubuntu/casper, Debian Live, Fedora, Arch). At firmware boot you pick an entry from the GRUB menu. This is closer to WinSetupFromUSB/Easy2Boot than to Ventoy: the menu is generated when the stick is written (adding more ISOs later means writing again). Only one Windows installer is supported, because Windows Setup looks for `\\sources` at the volume root.
+4. **Multi-ISO (two or more `--iso` / Add ISO)** — GPT with a small FAT32 EFI partition (`EFIBOOT`, GRUB) and an exFAT data partition (`ISOBOOT`). One Windows installer is extracted to the data volume root so Setup finds `\\sources`. Linux live ISOs are copied to `/isos` and loop-booted (Ubuntu/casper, Debian Live, Fedora, Arch). At firmware boot you pick an entry from the GRUB menu. After the stick exists, `add --iso` copies another Linux ISO (or Windows, if the stick has none yet) without erasing, and `refresh` rebuilds the menu if you copied files by hand. Only one Windows installer is supported, because Windows Setup looks for `\\sources` at the volume root.
 
 After a file-copy or raw write the volume is flushed and a light verify runs (EFI / installer size, or bytes written). A failed eject after a successful write is reported as a warning, not a failed write.
 
@@ -147,4 +149,4 @@ powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
 - The USB is re-checked immediately before erase, and must be larger than the ISO
 - Cancel after erase leaves a wiped stick
 
-This project does not download Windows from Microsoft and does not create macOS installer USBs. Multiboot sticks are UEFI-only and are not a full Ventoy clone (no “copy ISOs later and they appear automatically”).
+This project does not download Windows from Microsoft and does not create macOS installer USBs. Multiboot sticks are UEFI-only. After the first write you can add more Linux ISOs with `add` / **Add ISO to this USB**, or copy files into `/isos` and run `refresh` — the menu is not scanned automatically at boot the way Ventoy does.

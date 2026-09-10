@@ -35,6 +35,7 @@ export 'src/hybrid_iso.dart';
 export 'src/iso9660.dart';
 export 'src/iso_inspector.dart';
 export 'src/linux_boot_files.dart';
+export 'src/multiboot_disk.dart';
 export 'src/multiboot_plan.dart';
 export 'src/iso_mounter.dart';
 export 'src/iso_validator.dart';

@@ -1370,6 +1370,23 @@ image-type      : read/write
       expect(cfg, contains('iso-scan/filename=/isos/ubuntu.iso'));
       expect(cfg, contains('loopback loop'));
     });
+
+    test('detects mounted EFIBOOT + ISOBOOT volumes', () {
+      final temp = Directory.systemTemp.createTempSync('usb_iso_detect_');
+      addTearDown(() {
+        if (temp.existsSync()) {
+          temp.deleteSync(recursive: true);
+        }
+      });
+      final esp = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: esp, data: data);
+      final volumes = detectMultibootMounts([esp.path, data.path]);
+      expect(volumes, isNotNull);
+      expect(volumes!.bootMount, esp.path);
+      expect(volumes.dataMount, data.path);
+      expect(planFromMultibootVolume(data.path).windows, isNotNull);
+    });
   });
 
   group('BootableWriter.writeMulti', () {
@@ -1471,6 +1488,94 @@ image-type      : read/write
         File(p.join(data.path, 'sources', 'install.wim')).existsSync(),
         isTrue,
       );
+    });
+
+    test('adds a Linux ISO to an existing stick without erasing', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final extra = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'casper/vmlinuz': [1],
+            'casper/initrd': [2],
+          }),
+        );
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: extra.path, mountPath: linux.path),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      final events = await BootableWriter(host: host)
+          .addIso(
+            MultiAddRequest(isoPath: extra.path, disk: disk, confirmed: true),
+          )
+          .toList();
+      expect(host.eraseCalls, 0);
+      expect(events.last.step, WriteStep.done);
+      expect(
+        File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).readAsStringSync(),
+        contains('fedora.iso'),
+      );
+    });
+
+    test('refresh rebuilds GRUB from files already on the USB', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      File(p.join(data.path, 'isos', 'mint.iso')).writeAsBytesSync(
+        _isoWithFiles({
+          'casper/vmlinuz': [3],
+          'casper/initrd': [4],
+        }),
+      );
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      await BootableWriter(
+        host: host,
+      ).refreshMenu(MultiRefreshRequest(disk: disk)).toList();
+      expect(host.eraseCalls, 0);
+      expect(
+        File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).readAsStringSync(),
+        contains('mint.iso'),
+      );
+    });
+
+    test('add refuses a second Windows installer', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync([1]);
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: winIso.path, mountPath: win.path),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      expect(
+        () => BootableWriter(host: host)
+            .addIso(
+              MultiAddRequest(isoPath: winIso.path, disk: disk, dryRun: true),
+            )
+            .toList(),
+        throwsA(
+          isA<InvalidIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('already has a Windows installer'),
+          ),
+        ),
+      );
+      expect(host.eraseCalls, 0);
     });
 
     test('refuses two Windows ISOs without erasing', () async {
@@ -1679,6 +1784,21 @@ List<int> _minimalLinuxIso() {
     bytes[dir + 33 + i] = name.codeUnitAt(i);
   }
   return bytes;
+}
+
+void _writeMultibootStick({required Directory esp, required Directory data}) {
+  Directory(p.join(esp.path, 'EFI', 'BOOT')).createSync(recursive: true);
+  File(p.join(esp.path, 'EFI', 'BOOT', 'BOOTX64.EFI')).writeAsBytesSync([1, 2]);
+  Directory(p.join(esp.path, 'boot', 'grub')).createSync(recursive: true);
+  File(
+    p.join(esp.path, 'boot', 'grub', 'grub.cfg'),
+  ).writeAsStringSync('menuentry "placeholder" { reboot }\n');
+  Directory(p.join(data.path, 'isos')).createSync(recursive: true);
+  Directory(p.join(data.path, 'sources')).createSync(recursive: true);
+  Directory(p.join(data.path, 'efi', 'boot')).createSync(recursive: true);
+  File(p.join(data.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+  File(p.join(data.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
+  File(p.join(data.path, 'efi', 'boot', 'bootx64.efi')).writeAsBytesSync([1]);
 }
 
 IsoProfile _linuxProfile(String mountPath) {

@@ -5,6 +5,8 @@
 - Multiboot USB: GRUB menu on FAT32 `EFIBOOT` + exFAT `ISOBOOT`
 - One Windows installer (extracted to the data volume root) plus Linux live ISOs in `/isos`
 - Ubuntu/casper, Debian Live, Fedora, and Arch loop-boot entries
+- Add another ISO to an existing multiboot USB without erasing
+- Refresh the GRUB menu from `/isos` already on the stick
 
 ## 1.2.0
 

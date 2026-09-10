@@ -19,6 +19,11 @@ void main() {
     expect(await run(['make', '--help']), 0);
   });
 
+  test('add and refresh help succeed', () async {
+    expect(await run(['add', '--help']), 0);
+    expect(await run(['refresh', '--help']), 0);
+  });
+
   test('rewrites a TTY write line and prints other steps once', () {
     final buffer = StringBuffer();
     final printer = CliProgressWriter(sink: buffer, tty: true);

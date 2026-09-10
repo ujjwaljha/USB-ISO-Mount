@@ -428,6 +428,152 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  bool get _selectedIsMultiboot {
+    final disk = _selected;
+    if (disk == null) {
+      return false;
+    }
+    return isMultibootDisk(disk.mountPoints);
+  }
+
+  Future<void> _addToMultiboot() async {
+    final disk = _selected;
+    if (disk == null) {
+      setState(() => _error = 'Plug in a USB drive and refresh the list.');
+      return;
+    }
+    if (_isos.isEmpty) {
+      setState(() => _error = 'Choose an ISO to add first.');
+      return;
+    }
+    if (_isos.length > 1) {
+      setState(
+        () => _error = 'Add one ISO at a time to an existing multiboot USB.',
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) =>
+          _AddDialog(disk: disk, isoLabel: _isos.first.displayLabel),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+    final token = CancellationToken();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _progress = 0;
+      _status = 'Starting…';
+      _opCancel = token;
+    });
+    try {
+      await for (final event in _writer.addIso(
+        MultiAddRequest(
+          isoPath: _isos.first.path,
+          disk: disk,
+          confirmed: true,
+          existingMount: _isos.first.mount,
+          allowAdvancedTargets: _showAdvanced,
+          cancellation: token,
+        ),
+      )) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _status = event.message;
+          _progress = event.percent;
+        });
+      }
+      await _refreshDisks();
+    } on WriteCancelledException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Cancelled.';
+        _progress = 0;
+      });
+    } on UsbIsoException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Stopped.';
+        _progress = 0;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.toString();
+        _status = 'Stopped.';
+        _progress = 0;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _opCancel = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshMultiboot() async {
+    final disk = _selected;
+    if (disk == null) {
+      setState(() => _error = 'Plug in a USB drive and refresh the list.');
+      return;
+    }
+    final token = CancellationToken();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _progress = 0;
+      _status = 'Refreshing GRUB…';
+      _opCancel = token;
+    });
+    try {
+      await for (final event in _writer.refreshMenu(
+        MultiRefreshRequest(
+          disk: disk,
+          allowAdvancedTargets: _showAdvanced,
+          cancellation: token,
+        ),
+      )) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _status = event.message;
+          _progress = event.percent;
+        });
+      }
+    } on UsbIsoException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _error = error.message;
+        _status = 'Stopped.';
+        _progress = 0;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _opCancel = null;
+        });
+      }
+    }
+  }
+
   String? get _writeLayoutLine {
     if (_isos.length > 1) {
       return 'Layout: GRUB menu, FAT32 EFIBOOT + exFAT ISOBOOT '
@@ -509,6 +655,18 @@ class _HomePageState extends State<HomePage> {
                               : 'Make bootable USB',
                         ),
                       ),
+                      if (_selectedIsMultiboot) ...[
+                        FilledButton.tonalIcon(
+                          onPressed: _busy ? null : _addToMultiboot,
+                          icon: const Icon(Icons.playlist_add),
+                          label: const Text('Add ISO to this USB'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : _refreshMultiboot,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('Refresh GRUB menu'),
+                        ),
+                      ],
                       OutlinedButton.icon(
                         onPressed: _busy ? null : _formatUsb,
                         icon: const Icon(Icons.sd_card),
@@ -954,6 +1112,36 @@ class _EraseDialogState extends State<_EraseDialog> {
         FilledButton(
           onPressed: _understood ? () => Navigator.pop(context, true) : null,
           child: const Text('Erase and write'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AddDialog extends StatelessWidget {
+  const _AddDialog({required this.disk, required this.isoLabel});
+
+  final UsbDisk disk;
+  final String isoLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: slate800,
+      title: const Text('Add ISO to this USB?'),
+      content: Text(
+        '$isoLabel will be copied onto ${disk.label}. '
+        'The stick is not erased — existing Windows Setup and Linux ISOs stay.',
+        style: const TextStyle(height: 1.4),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Add ISO'),
         ),
       ],
     );
