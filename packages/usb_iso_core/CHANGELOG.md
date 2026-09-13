@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+- Multiboot USB: GRUB menu on FAT32 `EFIBOOT` + exFAT `ISOBOOT`
+- One Windows installer (extracted to the data volume root) plus Linux live ISOs in `/isos`
+- Ubuntu/casper, Debian Live, Fedora, and Arch loop-boot entries
+- Add another ISO to an existing multiboot USB without erasing
+- Refresh the GRUB menu from `/isos` already on the stick
+- Refuse add when the stick does not have enough free space
+- Refuse refresh when no Windows Setup or Linux ISOs are on the stick
+
 ## 1.2.0
 
 - Standalone USB format (FAT32, exFAT, NTFS) without writing an ISO

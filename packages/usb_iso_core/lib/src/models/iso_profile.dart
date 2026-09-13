@@ -115,7 +115,7 @@ class IsoProfile {
       case WriteStrategy.rawHybrid:
         return 'Layout: raw ISO write';
       case WriteStrategy.multiIso:
-        return 'Layout: multi-ISO (not implemented)';
+        return 'Layout: GRUB menu, FAT32 EFIBOOT + exFAT ISOBOOT';
       case WriteStrategy.unsupported:
         return 'Layout: unsupported';
     }

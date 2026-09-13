@@ -8,15 +8,20 @@ import 'cancellation.dart';
 import 'disk_layout.dart';
 import 'exceptions.dart';
 import 'file_copy.dart';
+import 'grub_config.dart';
+import 'grub_installer.dart';
 import 'host_factory.dart';
 import 'host_platform.dart';
 import 'hybrid_iso.dart';
 import 'iso_inspector.dart';
 import 'layout_chooser.dart';
+import 'linux_boot_files.dart';
 import 'models/iso_mount.dart';
 import 'models/iso_profile.dart';
 import 'models/usb_disk.dart';
 import 'models/write_progress.dart';
+import 'multiboot_disk.dart';
+import 'multiboot_plan.dart';
 import 'paths.dart';
 import 'process_runner.dart';
 import 'safety.dart';
@@ -32,6 +37,14 @@ String dryRunStrategyNotes({
   if (strategy == WriteStrategy.windowsDualPartition) {
     buffer.writeln(
       'Windows layout: FAT32 WINBOOT + NTFS WINSETUP (installer copied intact).',
+    );
+  }
+  if (strategy == WriteStrategy.multiIso) {
+    buffer.writeln(
+      'Multiboot layout: FAT32 $efiBootVolumeLabel (GRUB) + exFAT $isoBootVolumeLabel.',
+    );
+    buffer.writeln(
+      'At boot, pick Windows Setup or a Linux live ISO from the GRUB menu.',
     );
   }
   if (profile.needsSplit && strategy == WriteStrategy.windowsFileCopy) {
@@ -65,16 +78,73 @@ class WriteRequest {
   final CancellationToken? cancellation;
 }
 
+class MultiWriteRequest {
+  const MultiWriteRequest({
+    required this.isoPaths,
+    required this.disk,
+    this.confirmed = false,
+    this.dryRun = false,
+    this.allowAdvancedTargets = false,
+    this.cancellation,
+    this.existingMounts = const {},
+  });
+
+  final List<String> isoPaths;
+  final UsbDisk disk;
+  final bool confirmed;
+  final bool dryRun;
+  final bool allowAdvancedTargets;
+  final CancellationToken? cancellation;
+  final Map<String, IsoMount> existingMounts;
+}
+
+class MultiAddRequest {
+  const MultiAddRequest({
+    required this.isoPath,
+    required this.disk,
+    this.confirmed = false,
+    this.dryRun = false,
+    this.allowAdvancedTargets = false,
+    this.cancellation,
+    this.existingMount,
+  });
+
+  final String isoPath;
+  final UsbDisk disk;
+  final bool confirmed;
+  final bool dryRun;
+  final bool allowAdvancedTargets;
+  final CancellationToken? cancellation;
+  final IsoMount? existingMount;
+}
+
+class MultiRefreshRequest {
+  const MultiRefreshRequest({
+    required this.disk,
+    this.dryRun = false,
+    this.allowAdvancedTargets = false,
+    this.cancellation,
+  });
+
+  final UsbDisk disk;
+  final bool dryRun;
+  final bool allowAdvancedTargets;
+  final CancellationToken? cancellation;
+}
+
 class BootableWriter {
   BootableWriter({
     ProcessRunner? runner,
     HostPlatform? host,
     IsoInspector? inspector,
+    GrubInstaller? grubInstaller,
   }) : _host = host ?? createHostPlatform(runner),
-       _inspector = inspector ?? IsoInspector();
+       _inspector = inspector ?? IsoInspector(),
+       _grub = grubInstaller ?? GrubInstaller(runner: runner);
 
   final HostPlatform _host;
   final IsoInspector _inspector;
+  final GrubInstaller _grub;
 
   Stream<WriteProgress> write(WriteRequest request) async* {
     if (!request.dryRun && !request.confirmed) {
@@ -146,7 +216,9 @@ class BootableWriter {
         throw InvalidIsoException(profile.unsupportedMessage);
       }
       if (strategy == WriteStrategy.multiIso) {
-        throw UsbIsoException('Multi-ISO sticks are not implemented yet.');
+        throw UsbIsoException(
+          'Use writeMulti / make --iso a.iso --iso b.iso for a multiboot USB.',
+        );
       }
 
       if (strategy == WriteStrategy.windowsFileCopy && Platform.isWindows) {
@@ -300,6 +372,558 @@ class BootableWriter {
     }
   }
 
+  /// Erases the USB and writes a GRUB menu plus Windows Setup and/or Linux ISOs.
+  Stream<WriteProgress> writeMulti(MultiWriteRequest request) async* {
+    if (!request.dryRun && !request.confirmed) {
+      throw ConfirmationRequiredException(
+        'Refusing to erase ${request.disk.id} without explicit confirmation.',
+      );
+    }
+
+    Safety.ensureWritable(
+      request.disk,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+    );
+    for (final isoPath in request.isoPaths) {
+      if (isoLivesOnAnyMount(isoPath, request.disk.mountPoints)) {
+        throw UsbIsoException(
+          'An ISO is on ${request.disk.id}. Copy the images to the computer '
+          'first so they are not erased with the USB drive.',
+        );
+      }
+    }
+    await _host.verifyWritable(
+      request.disk,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+    );
+
+    yield const WriteProgress(
+      step: WriteStep.validating,
+      message: 'Checking the ISO images…',
+      percent: 0.02,
+    );
+
+    final ownedMounts = <IsoMount>[];
+    try {
+      final drafts = <MultiIsoDraft>[];
+      for (final isoPath in request.isoPaths) {
+        request.cancellation?.throwIfCancelled();
+        if (!File(isoPath).existsSync()) {
+          throw InvalidIsoException('ISO not found: $isoPath');
+        }
+        drafts.add(await _inspectForMultiboot(request, isoPath, ownedMounts));
+      }
+
+      final plan = planMultiboot(
+        drafts: drafts,
+        diskSizeBytes: request.disk.sizeBytes,
+      );
+
+      if (request.dryRun) {
+        yield WriteProgress(
+          step: WriteStep.done,
+          message: _multiDryRunSummary(request, plan),
+          percent: 1,
+        );
+        return;
+      }
+
+      request.cancellation?.throwIfCancelled();
+      yield WriteProgress(
+        step: WriteStep.preparing,
+        message:
+            'Multiboot USB (${plan.items.length} images). Erasing ${request.disk.label}…',
+        percent: 0.08,
+      );
+      yield WriteProgress(
+        step: WriteStep.erasing,
+        message:
+            'Erasing ${request.disk.id} as FAT32 $efiBootVolumeLabel + exFAT $isoBootVolumeLabel…',
+        percent: 0.12,
+      );
+      await _host.verifyWritable(
+        request.disk,
+        allowAdvancedTargets: request.allowAdvancedTargets,
+      );
+      request.cancellation?.throwIfCancelled();
+      await _host.eraseAndFormat(request.disk, layout: DiskLayout.efiPlusExfat);
+      request.cancellation?.throwIfCancelled(diskAlreadyErased: true);
+
+      yield const WriteProgress(
+        step: WriteStep.erasing,
+        message: 'Waiting for the USB volumes…',
+        percent: 0.18,
+      );
+      final volumes = await _host.waitForVolumeMount(
+        request.disk,
+        layout: DiskLayout.efiPlusExfat,
+      );
+      final dataMount = volumes.dataMount;
+      if (dataMount == null) {
+        throw UsbIsoException(
+          'The exFAT $isoBootVolumeLabel volume did not appear after formatting.',
+        );
+      }
+
+      yield const WriteProgress(
+        step: WriteStep.copying,
+        message: 'Installing the GRUB boot menu…',
+        percent: 0.2,
+      );
+      final grubCfg = buildGrubConfig(plan);
+      await _grub.install(
+        espMount: volumes.bootMount,
+        grubCfg: grubCfg,
+        linuxMountPaths: [
+          for (final item in plan.linux)
+            if (item.mountPath != null) item.mountPath!,
+        ],
+        linuxIsoPaths: [for (final item in plan.linux) item.isoPath],
+      );
+
+      final isoDir = Directory(p.join(dataMount, multibootIsoFolder));
+      await isoDir.create(recursive: true);
+
+      yield* _copyStream(
+        onProgress: (done, all) {
+          final fraction = all == 0 ? 1.0 : done / all;
+          return WriteProgress(
+            step: WriteStep.copying,
+            message: 'Copying installer files… ${(fraction * 100).round()}%',
+            percent: 0.22 + (0.66 * fraction),
+          );
+        },
+        copy: (onProgress) async {
+          var done = 0;
+          final windows = plan.windows;
+          var payload = 0;
+          for (final item in plan.linux) {
+            payload += File(item.isoPath).lengthSync();
+          }
+          if (windows?.mountPath != null) {
+            await for (final entity in Directory(
+              windows!.mountPath!,
+            ).list(recursive: true, followLinks: false)) {
+              if (entity is File) {
+                payload += await entity.length();
+              }
+            }
+          }
+          if (payload <= 0) {
+            payload = 1;
+          }
+
+          for (final item in plan.linux) {
+            request.cancellation?.throwIfCancelled(diskAlreadyErased: true);
+            final dest = p.join(isoDir.path, item.usbIsoFileName);
+            final before = done;
+            await copyFileWithProgress(
+              item.isoPath,
+              dest,
+              cancellation: request.cancellation,
+              onProgress: (copiedBytes, _) {
+                onProgress(before + copiedBytes, payload);
+              },
+            );
+            done += File(item.isoPath).lengthSync();
+            onProgress(done, payload);
+          }
+
+          if (windows?.mountPath != null) {
+            request.cancellation?.throwIfCancelled(diskAlreadyErased: true);
+            final before = done;
+            await copyDirectory(
+              windows!.mountPath!,
+              dataMount,
+              cancellation: request.cancellation,
+              onProgress: (copiedBytes, _) {
+                onProgress(before + copiedBytes, payload);
+              },
+            );
+          }
+        },
+      );
+
+      request.cancellation?.throwIfCancelled(diskAlreadyErased: true);
+      yield const WriteProgress(
+        step: WriteStep.verifying,
+        message: 'Verifying the multiboot USB…',
+        percent: 0.9,
+      );
+      _verifyMultiboot(volumes: volumes, plan: plan, grubCfg: grubCfg);
+
+      await _host.flushDisk(request.disk);
+      yield* _eject(requestAsWrite(request));
+    } finally {
+      for (final mount in ownedMounts) {
+        try {
+          await _host.unmountIso(mount);
+        } catch (_) {
+          // Best-effort.
+        }
+      }
+    }
+  }
+
+  /// Copies one more ISO onto an existing multiboot USB without erasing it.
+  Stream<WriteProgress> addIso(MultiAddRequest request) async* {
+    if (!request.dryRun && !request.confirmed) {
+      throw ConfirmationRequiredException(
+        'Refusing to change ${request.disk.id} without explicit confirmation.',
+      );
+    }
+    Safety.ensureWritable(
+      request.disk,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+    );
+    if (isoLivesOnAnyMount(request.isoPath, request.disk.mountPoints)) {
+      throw UsbIsoException(
+        'The ISO is on ${request.disk.id}. Copy it to the computer first.',
+      );
+    }
+    await _host.verifyWritable(
+      request.disk,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+    );
+    if (!File(request.isoPath).existsSync()) {
+      throw InvalidIsoException('ISO not found: ${request.isoPath}');
+    }
+    request.cancellation?.throwIfCancelled();
+
+    yield const WriteProgress(
+      step: WriteStep.validating,
+      message: 'Checking the ISO and multiboot USB…',
+      percent: 0.05,
+    );
+
+    final ownedMounts = <IsoMount>[];
+    try {
+      final draft = await _inspectForMultiboot(
+        MultiWriteRequest(
+          isoPaths: [request.isoPath],
+          disk: request.disk,
+          existingMounts: request.existingMount == null
+              ? const {}
+              : {request.isoPath: request.existingMount!},
+        ),
+        request.isoPath,
+        ownedMounts,
+      );
+      final volumes = await _resolveMultibootVolumes(request.disk);
+      final existing = planFromMultibootVolume(volumes.dataMount!);
+
+      if (isWindowsInstallerKind(draft.profile.kind) &&
+          existing.windows != null) {
+        throw InvalidIsoException(
+          'This USB already has a Windows installer. Only one Windows Setup '
+          'can live at the volume root. Add a Linux live ISO instead.',
+        );
+      }
+      if (!isWindowsInstallerKind(draft.profile.kind) &&
+          draft.linuxBoot == null) {
+        throw InvalidIsoException(
+          '${p.basename(request.isoPath)} is not a Linux live image this app '
+          'can add to the GRUB menu.',
+        );
+      }
+
+      request.cancellation?.throwIfCancelled();
+      ensureMultibootAddFits(
+        diskSizeBytes: request.disk.sizeBytes,
+        dataMount: volumes.dataMount!,
+        incomingBytes: File(request.isoPath).lengthSync(),
+      );
+
+      if (request.dryRun) {
+        yield WriteProgress(
+          step: WriteStep.done,
+          message:
+              'Dry run — the USB will not be erased.\n'
+              'Target: ${request.disk.label}\n'
+              'Add: ${p.basename(request.isoPath)}\n'
+              'Current menu:\n${existing.summary.isEmpty ? '  (empty)' : existing.summary}',
+          percent: 1,
+        );
+        return;
+      }
+
+      request.cancellation?.throwIfCancelled();
+      yield WriteProgress(
+        step: WriteStep.copying,
+        message: isWindowsInstallerKind(draft.profile.kind)
+            ? 'Extracting Windows Setup onto the USB…'
+            : 'Copying ${p.basename(request.isoPath)} to /isos…',
+        percent: 0.2,
+      );
+
+      if (isWindowsInstallerKind(draft.profile.kind)) {
+        if (draft.mountPath == null) {
+          throw InvalidIsoException(
+            'Could not mount ${p.basename(request.isoPath)} to copy Windows Setup.',
+          );
+        }
+        await copyDirectory(
+          draft.mountPath!,
+          volumes.dataMount!,
+          cancellation: request.cancellation,
+        );
+      } else {
+        final isoDir = Directory(
+          p.join(volumes.dataMount!, multibootIsoFolder),
+        );
+        await isoDir.create(recursive: true);
+        final used = {
+          for (final item in existing.linux) item.usbIsoFileName.toLowerCase(),
+        };
+        final name = uniqueIsoFileName(request.isoPath, used);
+        await copyFileWithProgress(
+          request.isoPath,
+          p.join(isoDir.path, name),
+          cancellation: request.cancellation,
+        );
+      }
+
+      request.cancellation?.throwIfCancelled();
+      yield const WriteProgress(
+        step: WriteStep.verifying,
+        message: 'Refreshing the GRUB menu…',
+        percent: 0.85,
+      );
+      final plan = planFromMultibootVolume(volumes.dataMount!);
+      ensureMultibootPlanNotEmpty(plan);
+      await _writeGrubMenu(volumes, plan);
+      _verifyMultiboot(
+        volumes: volumes,
+        plan: plan,
+        grubCfg: buildGrubConfig(plan),
+      );
+      await _host.flushDisk(request.disk);
+      yield const WriteProgress(
+        step: WriteStep.done,
+        message:
+            'Added to the multiboot USB. Eject when you are done adding images, '
+            'then boot the PC and pick an entry from the GRUB menu.',
+        percent: 1,
+      );
+    } finally {
+      for (final mount in ownedMounts) {
+        try {
+          await _host.unmountIso(mount);
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Regenerates GRUB from the ISOs already on a multiboot USB (no erase).
+  Stream<WriteProgress> refreshMenu(MultiRefreshRequest request) async* {
+    Safety.ensureWritable(
+      request.disk,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+    );
+    await _host.verifyWritable(
+      request.disk,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+    );
+    yield const WriteProgress(
+      step: WriteStep.validating,
+      message: 'Reading the multiboot USB…',
+      percent: 0.1,
+    );
+    request.cancellation?.throwIfCancelled();
+    final volumes = await _resolveMultibootVolumes(request.disk);
+    final plan = planFromMultibootVolume(volumes.dataMount!);
+    ensureMultibootPlanNotEmpty(plan);
+    if (request.dryRun) {
+      yield WriteProgress(
+        step: WriteStep.done,
+        message:
+            'Dry run — GRUB will not be rewritten.\n'
+            'Target: ${request.disk.label}\n'
+            'Menu:\n${plan.summary.isEmpty ? '  (empty)' : plan.summary}',
+        percent: 1,
+      );
+      return;
+    }
+    request.cancellation?.throwIfCancelled();
+    yield const WriteProgress(
+      step: WriteStep.copying,
+      message: 'Writing the GRUB menu…',
+      percent: 0.5,
+    );
+    await _writeGrubMenu(volumes, plan);
+    _verifyMultiboot(
+      volumes: volumes,
+      plan: plan,
+      grubCfg: buildGrubConfig(plan),
+    );
+    await _host.flushDisk(request.disk);
+    yield WriteProgress(
+      step: WriteStep.done,
+      message:
+          'GRUB menu updated (${plan.items.length} ${plan.items.length == 1 ? 'entry' : 'entries'}).',
+      percent: 1,
+    );
+  }
+
+  Future<PreparedVolumes> _resolveMultibootVolumes(UsbDisk disk) async {
+    final detected = detectMultibootMounts(disk.mountPoints);
+    if (detected != null) {
+      return detected;
+    }
+    try {
+      return await _host.waitForVolumeMount(
+        disk,
+        layout: DiskLayout.efiPlusExfat,
+      );
+    } on UsbIsoException {
+      throw UsbIsoException(
+        'Disk ${disk.id} is not a multiboot USB (missing $efiBootVolumeLabel / '
+        '$isoBootVolumeLabel). Create one first with '
+        '`make --iso Windows.iso --iso ubuntu.iso`.',
+      );
+    }
+  }
+
+  Future<void> _writeGrubMenu(
+    PreparedVolumes volumes,
+    MultiIsoPlan plan,
+  ) async {
+    final cfg = buildGrubConfig(plan);
+    await _grub.install(
+      espMount: volumes.bootMount,
+      grubCfg: cfg,
+      linuxIsoPaths: [for (final item in plan.linux) item.isoPath],
+    );
+  }
+
+  WriteRequest requestAsWrite(MultiWriteRequest request) {
+    return WriteRequest(
+      isoPath: request.isoPaths.first,
+      disk: request.disk,
+      confirmed: request.confirmed,
+      dryRun: request.dryRun,
+      allowAdvancedTargets: request.allowAdvancedTargets,
+      cancellation: request.cancellation,
+    );
+  }
+
+  Future<MultiIsoDraft> _inspectForMultiboot(
+    MultiWriteRequest request,
+    String isoPath,
+    List<IsoMount> ownedMounts,
+  ) async {
+    final existing = request.existingMounts[isoPath];
+    final reuse =
+        existing != null &&
+        p.equals(p.normalize(existing.isoPath), p.normalize(isoPath));
+    if (reuse) {
+      final profile = _inspector.inspectMounted(existing.mountPath);
+      return MultiIsoDraft(
+        isoPath: isoPath,
+        profile: profile,
+        linuxBoot: probeLinuxBootFromTree(existing.mountPath),
+        mountPath: existing.mountPath,
+      );
+    }
+
+    try {
+      final mount = await _host.mountIso(isoPath);
+      ownedMounts.add(mount);
+      final profile = _inspector.inspectMounted(mount.mountPath);
+      return MultiIsoDraft(
+        isoPath: isoPath,
+        profile: profile,
+        linuxBoot: probeLinuxBootFromTree(mount.mountPath),
+        mountPath: mount.mountPath,
+      );
+    } on UsbIsoException {
+      final profile = _inspector.inspectIsoFile(isoPath);
+      if (isWindowsInstallerKind(profile.kind)) {
+        rethrow;
+      }
+      return MultiIsoDraft(
+        isoPath: isoPath,
+        profile: profile,
+        linuxBoot: probeLinuxBootFromIso(isoPath),
+      );
+    }
+  }
+
+  String _multiDryRunSummary(MultiWriteRequest request, MultiIsoPlan plan) {
+    final buffer = StringBuffer()
+      ..writeln('Dry run — no disks will be changed.')
+      ..writeln('Target: ${request.disk.label}')
+      ..writeln('Strategy: multiIso')
+      ..writeln(
+        'Layout: FAT32 $efiBootVolumeLabel (GRUB) + exFAT $isoBootVolumeLabel',
+      )
+      ..writeln('Menu:')
+      ..writeln(plan.summary)
+      ..writeln(
+        'Steps: erase EFI+exFAT → install GRUB → copy Linux ISOs → '
+        '${plan.windows == null ? '' : 'extract Windows → '}'
+        'write menu → eject.',
+      );
+    return buffer.toString().trim();
+  }
+
+  void _verifyMultiboot({
+    required PreparedVolumes volumes,
+    required MultiIsoPlan plan,
+    required String grubCfg,
+  }) {
+    final efi = File(p.join(volumes.bootMount, 'EFI', 'BOOT', 'BOOTX64.EFI'));
+    if (!efi.existsSync() || efi.lengthSync() <= 0) {
+      throw UsbIsoException(
+        'Verification failed: EFI/BOOT/BOOTX64.EFI is missing on the USB.',
+      );
+    }
+    final cfg = File(p.join(volumes.bootMount, 'boot', 'grub', 'grub.cfg'));
+    if (!cfg.existsSync() || !cfg.readAsStringSync().contains('menuentry')) {
+      throw UsbIsoException(
+        'Verification failed: boot/grub/grub.cfg is missing or empty.',
+      );
+    }
+    if (!cfg.readAsStringSync().contains(
+          plan.items.first.menuTitle.split('"').first,
+        ) &&
+        !grubCfg.contains('menuentry')) {
+      throw UsbIsoException(
+        'Verification failed: the GRUB menu is incomplete.',
+      );
+    }
+    final data = volumes.dataMount;
+    if (data == null) {
+      throw UsbIsoException(
+        'Verification failed: the ISO data volume is missing.',
+      );
+    }
+    for (final item in plan.linux) {
+      final iso = File(p.join(data, multibootIsoFolder, item.usbIsoFileName));
+      if (!iso.existsSync() || iso.lengthSync() <= 0) {
+        throw UsbIsoException(
+          'Verification failed: ${item.usbIsoFileName} is missing on the USB.',
+        );
+      }
+    }
+    final windows = plan.windows;
+    if (windows != null) {
+      final sources = [
+        File(p.join(data, 'sources', 'boot.wim')),
+        File(p.join(data, 'Sources', 'boot.wim')),
+        File(p.join(data, 'sources', 'install.wim')),
+        File(p.join(data, 'Sources', 'install.wim')),
+        File(p.join(data, 'sources', 'install.esd')),
+        File(p.join(data, 'Sources', 'install.esd')),
+      ];
+      if (sources.every((file) => !file.existsSync())) {
+        throw UsbIsoException(
+          'Verification failed: Windows sources are missing on the USB.',
+        );
+      }
+    }
+  }
+
   Stream<WriteProgress> _writeRaw(
     WriteRequest request,
     IsoProfile profile,
@@ -438,7 +1062,8 @@ class BootableWriter {
       WriteStrategy.windowsFileCopy =>
         'erase FAT32 → copy files'
             '${profile.needsSplit ? ' → split installer image' : ''} → eject',
-      WriteStrategy.multiIso => 'multi-ISO (not implemented)',
+      WriteStrategy.multiIso =>
+        'erase FAT32 EFI + exFAT → install GRUB → copy Linux ISOs → extract Windows → write menu → eject',
       WriteStrategy.unsupported => 'unsupported',
     };
     final buffer = StringBuffer()

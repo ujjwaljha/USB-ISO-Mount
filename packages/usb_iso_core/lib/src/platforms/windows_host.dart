@@ -76,6 +76,34 @@ try {
 ''';
 }
 
+/// GPT EFI System Partition (FAT32) plus an exFAT data volume for multiboot.
+String windowsEfiPlusExfatPowerShell({
+  required int diskNumber,
+  required String busGuard,
+}) {
+  return '''
+\$ErrorActionPreference = 'Stop'
+\$diskNumber = $diskNumber
+\$disk = Get-Disk -Number \$diskNumber
+$busGuard
+if (\$disk.IsBoot -or \$disk.IsSystem) { throw 'Refusing to erase a boot disk' }
+
+Get-Disk -Number \$diskNumber | Get-Partition -ErrorAction SilentlyContinue |
+  Get-Volume -ErrorAction SilentlyContinue |
+  Dismount-Volume -Force -ErrorAction SilentlyContinue
+
+Clear-Disk -Number \$diskNumber -RemoveData -RemoveOEM -Confirm:\$false
+Initialize-Disk -Number \$diskNumber -PartitionStyle GPT | Out-Null
+
+\$bootSize = $efiSystemPartitionBytes
+\$boot = New-Partition -DiskNumber \$diskNumber -Size \$bootSize -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' -AssignDriveLetter
+Format-Volume -Partition \$boot -FileSystem FAT32 -NewFileSystemLabel '$efiBootVolumeLabel' -Confirm:\$false | Out-Null
+\$data = New-Partition -DiskNumber \$diskNumber -UseMaximumSize -AssignDriveLetter
+Format-Volume -Partition \$data -FileSystem exFAT -NewFileSystemLabel '$isoBootVolumeLabel' -Confirm:\$false | Out-Null
+@{ Boot = [string]\$boot.DriveLetter; Data = [string]\$data.DriveLetter } | ConvertTo-Json -Compress
+''';
+}
+
 bool isAdvancedWindowsBus(String bus) {
   final value = bus.toUpperCase();
   return value == 'SD' ||
@@ -310,7 +338,9 @@ foreach (\$vol in @(\$vols)) {
     await verifyWritable(disk);
     final number = int.parse(disk.id);
     final busGuard = _busGuard(disk.isAdvancedTarget);
-    final script = layout == DiskLayout.fat32PlusNtfs
+    final script = layout == DiskLayout.efiPlusExfat
+        ? windowsEfiPlusExfatPowerShell(diskNumber: number, busGuard: busGuard)
+        : layout == DiskLayout.fat32PlusNtfs
         ? '''
 \$ErrorActionPreference = 'Stop'
 \$diskNumber = $number
@@ -422,7 +452,7 @@ Format-Volume -Partition \$part -FileSystem '$fs' -NewFileSystemLabel '$escapedL
   }) async {
     final number = int.parse(disk.id);
     for (var i = 0; i < 40; i++) {
-      if (layout == DiskLayout.fat32PlusNtfs) {
+      if (isDualVolumeLayout(layout)) {
         final result = await _powershell('''
 \$ErrorActionPreference = 'Stop'
 Get-Partition -DiskNumber $number | ForEach-Object {
@@ -449,10 +479,14 @@ Get-Partition -DiskNumber $number | ForEach-Object {
               continue;
             }
             final root = letter.endsWith(':') ? '$letter\\' : '$letter:\\';
-            if (label == 'WINBOOT' && Directory(root).existsSync()) {
+            if (label == bootVolumeLabelFor(layout) &&
+                Directory(root).existsSync()) {
               boot = root;
             }
-            if (label == _volumeLabel && Directory(root).existsSync()) {
+            final dataLabel = dataVolumeLabelFor(layout);
+            if (dataLabel != null &&
+                label == dataLabel &&
+                Directory(root).existsSync()) {
               data = root;
             }
           }

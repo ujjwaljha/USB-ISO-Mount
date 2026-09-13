@@ -142,8 +142,9 @@ void main() {
 
     test('rejects a folder without install.wim or install.esd', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
-          .writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
+      ).writeAsBytesSync([1]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
       expect(info.installKind, WindowsInstallImageKind.none);
       expect(
@@ -154,8 +155,9 @@ void main() {
 
     test('accepts ARM EFI plus install.wim', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'))
-          .writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'),
+      ).writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
       File(p.join(temp.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
@@ -165,11 +167,13 @@ void main() {
 
     test('accepts WinPE boot.wim', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
-          .writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
+      ).writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
-      File(p.join(temp.path, 'sources', 'boot.wim'))
-          .writeAsBytesSync([1, 2, 3]);
+      File(
+        p.join(temp.path, 'sources', 'boot.wim'),
+      ).writeAsBytesSync([1, 2, 3]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
       expect(info.installKind, WindowsInstallImageKind.bootWim);
       expect(() => WindowsIsoValidator().ensureValid(info), returnsNormally);
@@ -177,11 +181,13 @@ void main() {
 
     test('detects ESD images', () {
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
-          .writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
+      ).writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
-      File(p.join(temp.path, 'sources', 'install.esd'))
-          .writeAsBytesSync([1, 2]);
+      File(
+        p.join(temp.path, 'sources', 'install.esd'),
+      ).writeAsBytesSync([1, 2]);
       final info = WindowsIsoValidator().inspectMounted(temp.path);
       expect(info.installKind, WindowsInstallImageKind.esd);
       expect(info.needsSplit, isFalse);
@@ -604,8 +610,9 @@ image-type      : read/write
       temp.deleteSync(recursive: true);
       temp.createSync();
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'))
-          .writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootaa64.efi'),
+      ).writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
       File(p.join(temp.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
       expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsArm);
@@ -613,8 +620,9 @@ image-type      : read/write
       temp.deleteSync(recursive: true);
       temp.createSync();
       Directory(p.join(temp.path, 'efi', 'boot')).createSync(recursive: true);
-      File(p.join(temp.path, 'efi', 'boot', 'bootx64.efi'))
-          .writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'efi', 'boot', 'bootx64.efi'),
+      ).writeAsBytesSync([1]);
       Directory(p.join(temp.path, 'sources')).createSync();
       File(p.join(temp.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
       expect(IsoInspector().inspectMounted(temp.path).kind, IsoKind.windowsPe);
@@ -745,6 +753,10 @@ image-type      : read/write
       expect(
         huge.layoutSummary(WriteStrategy.windowsFileCopy),
         'Layout: FAT32, will split WIM',
+      );
+      expect(
+        huge.layoutSummary(WriteStrategy.multiIso),
+        'Layout: GRUB menu, FAT32 EFIBOOT + exFAT ISOBOOT',
       );
     });
 
@@ -1048,10 +1060,9 @@ image-type      : read/write
         mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
       );
       expect(
-        () =>
-            DiskFormatter(host: host)
-                .format(FormatRequest(disk: _usb()))
-                .toList(),
+        () => DiskFormatter(
+          host: host,
+        ).format(FormatRequest(disk: _usb())).toList(),
         throwsA(isA<ConfirmationRequiredException>()),
       );
       expect(host.formatCalls, 0);
@@ -1145,12 +1156,603 @@ image-type      : read/write
       );
     });
   });
+
+  group('linuxPartitionDevice', () {
+    test('adds a partition suffix for scsi and nvme names', () {
+      expect(linuxPartitionDevice('/dev/sda', 1), '/dev/sda1');
+      expect(linuxPartitionDevice('/dev/nvme0n1', 2), '/dev/nvme0n1p2');
+    });
+  });
+
+  group('multiboot host scripts', () {
+    test('macOS diskutil args create EFI + ExFAT', () {
+      expect(macosEfiPlusExfatArgs('disk4'), [
+        'partitionDisk',
+        'disk4',
+        'GPT',
+        'EFI',
+        'EFIBOOT',
+        '512M',
+        'ExFAT',
+        'ISOBOOT',
+        'R',
+      ]);
+    });
+
+    test('Windows script marks an ESP and formats exFAT', () {
+      final script = windowsEfiPlusExfatPowerShell(
+        diskNumber: 2,
+        busGuard:
+            r"if ([string]$disk.BusType -ne 'USB') { throw 'Not a USB disk' }",
+      );
+      expect(script, contains('{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'));
+      expect(script, contains('EFIBOOT'));
+      expect(script, contains('ISOBOOT'));
+      expect(script, contains('exFAT'));
+    });
+
+    test('Linux parted args mark the ESP', () {
+      final args = linuxEfiPlusExfatPartedArgs('/dev/sdb');
+      expect(args, contains('esp'));
+      expect(args, contains('ISOBOOT'));
+    });
+  });
+
+  group('LinuxBootFiles', () {
+    late Directory temp;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('usb_iso_linuxboot_');
+    });
+
+    tearDown(() {
+      if (temp.existsSync()) {
+        temp.deleteSync(recursive: true);
+      }
+    });
+
+    test('finds Ubuntu casper kernel and initrd', () {
+      _writeLinuxLayout(temp);
+      File(p.join(temp.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final boot = probeLinuxBootFromTree(temp.path);
+      expect(boot, isNotNull);
+      expect(boot!.kind, LinuxLiveKind.casper);
+      expect(boot.kernelPath, 'casper/vmlinuz');
+      expect(boot.initrdPath, 'casper/initrd');
+      expect(
+        boot.kernelArguments('/isos/ubuntu.iso'),
+        contains('iso-scan/filename=/isos/ubuntu.iso'),
+      );
+    });
+  });
+
+  group('ISO 9660 path find/extract', () {
+    late Directory temp;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('usb_iso_iso9660_');
+    });
+
+    tearDown(() {
+      if (temp.existsSync()) {
+        temp.deleteSync(recursive: true);
+      }
+    });
+
+    test('finds a nested file and extracts it', () {
+      final iso = File(p.join(temp.path, 'nested.iso'));
+      iso.writeAsBytesSync(
+        _isoWithFiles({
+          'casper/vmlinuz': [1, 2, 3, 4],
+          'efi/boot/bootx64.efi': [5, 6, 7],
+        }),
+      );
+      final kernel = findIso9660Path(iso.path, 'casper/vmlinuz');
+      expect(kernel, isNotNull);
+      expect(kernel!.isDirectory, isFalse);
+      final dest = p.join(temp.path, 'vmlinuz');
+      extractIso9660File(isoPath: iso.path, entry: kernel, destination: dest);
+      expect(File(dest).readAsBytesSync(), [1, 2, 3, 4]);
+      expect(findIso9660Path(iso.path, 'efi/boot/bootx64.efi'), isNotNull);
+    });
+
+    test('probes casper boot files from an ISO', () {
+      final iso = File(p.join(temp.path, 'ubuntu.iso'));
+      iso.writeAsBytesSync(
+        _isoWithFiles({
+          'casper/vmlinuz': [1],
+          'casper/initrd': [2],
+        }),
+      );
+      final boot = probeLinuxBootFromIso(iso.path);
+      expect(boot?.kernelPath, 'casper/vmlinuz');
+      expect(boot?.initrdPath, 'casper/initrd');
+    });
+  });
+
+  group('MultiIsoPlan', () {
+    late Directory temp;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('usb_iso_plan_');
+    });
+
+    tearDown(() {
+      if (temp.existsSync()) {
+        temp.deleteSync(recursive: true);
+      }
+    });
+
+    test('rejects a single ISO', () {
+      final iso = File(p.join(temp.path, 'a.iso'))..writeAsBytesSync([1]);
+      expect(
+        () => planMultiboot(
+          drafts: [
+            MultiIsoDraft(
+              isoPath: iso.path,
+              profile: _linuxProfile(temp.path),
+              linuxBoot: const LinuxBootFiles(
+                kernelPath: 'casper/vmlinuz',
+                initrdPath: 'casper/initrd',
+                kind: LinuxLiveKind.casper,
+              ),
+            ),
+          ],
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+        ),
+        throwsA(isA<InvalidIsoException>()),
+      );
+    });
+
+    test('rejects two Windows installers', () {
+      final a = File(p.join(temp.path, 'win1.iso'))..writeAsBytesSync([1]);
+      final b = File(p.join(temp.path, 'win2.iso'))..writeAsBytesSync([1]);
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      expect(
+        () => planMultiboot(
+          drafts: [
+            MultiIsoDraft(
+              isoPath: a.path,
+              profile: IsoInspector().inspectMounted(win.path),
+              mountPath: win.path,
+            ),
+            MultiIsoDraft(
+              isoPath: b.path,
+              profile: IsoInspector().inspectMounted(win.path),
+              mountPath: win.path,
+            ),
+          ],
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+        ),
+        throwsA(
+          isA<InvalidIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('Only one Windows installer'),
+          ),
+        ),
+      );
+    });
+
+    test('accepts Windows plus Ubuntu and builds a GRUB menu', () {
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 1));
+      final linuxIso = File(p.join(temp.path, 'ubuntu.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 2));
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      File(p.join(win.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final plan = planMultiboot(
+        drafts: [
+          MultiIsoDraft(
+            isoPath: winIso.path,
+            profile: IsoInspector().inspectMounted(win.path),
+            mountPath: win.path,
+          ),
+          MultiIsoDraft(
+            isoPath: linuxIso.path,
+            profile: IsoInspector().inspectMounted(linux.path),
+            linuxBoot: probeLinuxBootFromTree(linux.path),
+            mountPath: linux.path,
+          ),
+        ],
+        diskSizeBytes: 64 * 1024 * 1024 * 1024,
+      );
+      expect(plan.windows, isNotNull);
+      expect(plan.linux, hasLength(1));
+      final cfg = buildGrubConfig(plan);
+      expect(cfg, contains('chainloader /efi/boot/bootx64.efi'));
+      expect(cfg, contains('/isos/ubuntu.iso'));
+      expect(cfg, contains('iso-scan/filename=/isos/ubuntu.iso'));
+      expect(cfg, contains('loopback loop'));
+    });
+
+    test('detects mounted EFIBOOT + ISOBOOT volumes', () {
+      final temp = Directory.systemTemp.createTempSync('usb_iso_detect_');
+      addTearDown(() {
+        if (temp.existsSync()) {
+          temp.deleteSync(recursive: true);
+        }
+      });
+      final esp = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: esp, data: data);
+      final volumes = detectMultibootMounts([esp.path, data.path]);
+      expect(volumes, isNotNull);
+      expect(volumes!.bootMount, esp.path);
+      expect(volumes.dataMount, data.path);
+      expect(planFromMultibootVolume(data.path).windows, isNotNull);
+    });
+
+    test('refuses an add that will not fit on the stick', () {
+      final temp = Directory.systemTemp.createTempSync('usb_iso_space_');
+      addTearDown(() {
+        if (temp.existsSync()) {
+          temp.deleteSync(recursive: true);
+        }
+      });
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      Directory(p.join(data.path, 'isos')).createSync();
+      File(p.join(data.path, 'isos', 'ubuntu.iso')).writeAsBytesSync(
+        List<int>.filled(8 * 1024 * 1024, 1),
+      );
+      expect(volumeUsedBytes(data.path), greaterThan(0));
+      expect(
+        () => ensureMultibootAddFits(
+          diskSizeBytes: efiSystemPartitionBytes + 10 * 1024 * 1024,
+          dataMount: data.path,
+          incomingBytes: 4 * 1024 * 1024,
+        ),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('enough free space'),
+          ),
+        ),
+      );
+      expect(
+        () => ensureMultibootAddFits(
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+          dataMount: data.path,
+          incomingBytes: 4 * 1024 * 1024,
+        ),
+        returnsNormally,
+      );
+    });
+  });
+
+  group('BootableWriter.writeMulti', () {
+    late Directory temp;
+
+    setUp(() {
+      temp = Directory.systemTemp.createTempSync('usb_iso_multi_');
+    });
+
+    tearDown(() {
+      if (temp.existsSync()) {
+        temp.deleteSync(recursive: true);
+      }
+    });
+
+    test('dry-run does not erase', () async {
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 1));
+      final linuxIso = File(p.join(temp.path, 'ubuntu.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 2));
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      File(p.join(win.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: winIso.path, mountPath: win.path),
+        mounts: {
+          winIso.path: IsoMount(isoPath: winIso.path, mountPath: win.path),
+          linuxIso.path: IsoMount(
+            isoPath: linuxIso.path,
+            mountPath: linux.path,
+          ),
+        },
+      );
+      final events = await BootableWriter(host: host)
+          .writeMulti(
+            MultiWriteRequest(
+              isoPaths: [winIso.path, linuxIso.path],
+              disk: _usb(),
+              dryRun: true,
+            ),
+          )
+          .toList();
+      expect(host.eraseCalls, 0);
+      expect(events.last.message, contains('multiIso'));
+      expect(events.last.message, contains('GRUB'));
+    });
+
+    test('writes GRUB, the Linux ISO, and Windows Setup files', () async {
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 1));
+      final linuxIso = File(p.join(temp.path, 'ubuntu.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 2));
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      File(p.join(win.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final dest = Directory(p.join(temp.path, 'dest'))..createSync();
+      final host = FakeHost(
+        mount: IsoMount(isoPath: winIso.path, mountPath: win.path),
+        mounts: {
+          winIso.path: IsoMount(isoPath: winIso.path, mountPath: win.path),
+          linuxIso.path: IsoMount(
+            isoPath: linuxIso.path,
+            mountPath: linux.path,
+          ),
+        },
+      )..destination = dest;
+      final events = await BootableWriter(host: host)
+          .writeMulti(
+            MultiWriteRequest(
+              isoPaths: [winIso.path, linuxIso.path],
+              disk: _usb(),
+              confirmed: true,
+            ),
+          )
+          .toList();
+      expect(host.eraseCalls, 1);
+      expect(host.lastEraseLayout, DiskLayout.efiPlusExfat);
+      expect(events.last.step, WriteStep.done);
+      expect(
+        File(p.join(dest.path, 'EFI', 'BOOT', 'BOOTX64.EFI')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).readAsStringSync(),
+        contains('menuentry'),
+      );
+      final data = Directory('${dest.path}_data');
+      expect(
+        File(p.join(data.path, 'isos', 'ubuntu.iso')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(data.path, 'sources', 'install.wim')).existsSync(),
+        isTrue,
+      );
+    });
+
+    test('adds a Linux ISO to an existing stick without erasing', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final extra = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'casper/vmlinuz': [1],
+            'casper/initrd': [2],
+          }),
+        );
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: extra.path, mountPath: linux.path),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      final events = await BootableWriter(host: host)
+          .addIso(
+            MultiAddRequest(isoPath: extra.path, disk: disk, confirmed: true),
+          )
+          .toList();
+      expect(host.eraseCalls, 0);
+      expect(events.last.step, WriteStep.done);
+      expect(
+        File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).readAsStringSync(),
+        contains('fedora.iso'),
+      );
+    });
+
+    test('refresh rebuilds GRUB from files already on the USB', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      File(p.join(data.path, 'isos', 'mint.iso')).writeAsBytesSync(
+        _isoWithFiles({
+          'casper/vmlinuz': [3],
+          'casper/initrd': [4],
+        }),
+      );
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      await BootableWriter(
+        host: host,
+      ).refreshMenu(MultiRefreshRequest(disk: disk)).toList();
+      expect(host.eraseCalls, 0);
+      expect(
+        File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).readAsStringSync(),
+        contains('mint.iso'),
+      );
+    });
+
+    test('add refuses when the USB is too small', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final extra = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'casper/vmlinuz': [1],
+            'casper/initrd': [2],
+          }),
+        );
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: extra.path, mountPath: linux.path),
+      );
+      final disk = UsbDisk(
+        id: 'disk70',
+        devicePath: '/dev/disk70',
+        name: 'Tiny',
+        sizeBytes: efiSystemPartitionBytes + 8 * 1024 * 1024,
+        busProtocol: 'USB',
+        isRemovable: true,
+        isInternal: false,
+        isBoot: false,
+        isVirtual: false,
+        mountPoints: [dest.path, data.path],
+      );
+      expect(
+        () => BootableWriter(host: host)
+            .addIso(
+              MultiAddRequest(isoPath: extra.path, disk: disk, dryRun: true),
+            )
+            .toList(),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('enough free space'),
+          ),
+        ),
+      );
+      expect(host.eraseCalls, 0);
+    });
+
+    test('add respects cancellation before copying', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final extra = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'casper/vmlinuz': [1],
+            'casper/initrd': [2],
+          }),
+        );
+      final host = FakeHost(
+        mount: IsoMount(isoPath: extra.path, mountPath: extra.path),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      final token = CancellationToken()..cancel();
+      expect(
+        () => BootableWriter(host: host)
+            .addIso(
+              MultiAddRequest(
+                isoPath: extra.path,
+                disk: disk,
+                confirmed: true,
+                cancellation: token,
+              ),
+            )
+            .toList(),
+        throwsA(isA<WriteCancelledException>()),
+      );
+      expect(File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(), isFalse);
+    });
+
+    test('refresh refuses a stick with no menu entries', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      Directory(p.join(dest.path, 'boot', 'grub')).createSync(recursive: true);
+      File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).writeAsStringSync(
+        'menuentry "empty" { reboot }\n',
+      );
+      Directory(p.join(data.path, 'isos')).createSync(recursive: true);
+      final host = FakeHost(
+        mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      expect(
+        () => BootableWriter(
+          host: host,
+        ).refreshMenu(MultiRefreshRequest(disk: disk, dryRun: true)).toList(),
+        throwsA(
+          isA<UsbIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('No Windows Setup or Linux live ISOs'),
+          ),
+        ),
+      );
+    });
+
+    test('add refuses a second Windows installer', () async {
+      final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      _writeMultibootStick(esp: dest, data: data);
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync([1]);
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: winIso.path, mountPath: win.path),
+      );
+      final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+      expect(
+        () => BootableWriter(host: host)
+            .addIso(
+              MultiAddRequest(isoPath: winIso.path, disk: disk, dryRun: true),
+            )
+            .toList(),
+        throwsA(
+          isA<InvalidIsoException>().having(
+            (e) => e.message,
+            'message',
+            contains('already has a Windows installer'),
+          ),
+        ),
+      );
+      expect(host.eraseCalls, 0);
+    });
+
+    test('refuses two Windows ISOs without erasing', () async {
+      final a = File(p.join(temp.path, 'a.iso'))..writeAsBytesSync([1]);
+      final b = File(p.join(temp.path, 'b.iso'))..writeAsBytesSync([1]);
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      final host = FakeHost(
+        mount: IsoMount(isoPath: a.path, mountPath: win.path),
+        mounts: {
+          a.path: IsoMount(isoPath: a.path, mountPath: win.path),
+          b.path: IsoMount(isoPath: b.path, mountPath: win.path),
+        },
+      );
+      expect(
+        () => BootableWriter(host: host)
+            .writeMulti(
+              MultiWriteRequest(
+                isoPaths: [a.path, b.path],
+                disk: _usb(),
+                dryRun: true,
+              ),
+            )
+            .toList(),
+        throwsA(isA<InvalidIsoException>()),
+      );
+      expect(host.eraseCalls, 0);
+    });
+  });
 }
 
 class FakeHost implements HostPlatform {
-  FakeHost({required this.mount});
+  FakeHost({required this.mount, this.mounts});
 
   final IsoMount mount;
+  final Map<String, IsoMount>? mounts;
   int mountCalls = 0;
   int unmountCalls = 0;
   int eraseCalls = 0;
@@ -1160,6 +1762,7 @@ class FakeHost implements HostPlatform {
   String? ejectError;
   VolumeFilesystem? lastFormatFilesystem;
   String? lastFormatLabel;
+  DiskLayout? lastEraseLayout;
 
   @override
   Future<List<UsbDisk>> listUsbDisks({bool includeAdvanced = false}) async =>
@@ -1174,6 +1777,10 @@ class FakeHost implements HostPlatform {
   @override
   Future<IsoMount> mountIso(String isoPath) async {
     mountCalls++;
+    final specific = mounts?[isoPath];
+    if (specific != null) {
+      return specific;
+    }
     return mount;
   }
 
@@ -1188,6 +1795,7 @@ class FakeHost implements HostPlatform {
     DiskLayout layout = DiskLayout.fat32,
   }) async {
     eraseCalls++;
+    lastEraseLayout = layout;
   }
 
   @override
@@ -1210,7 +1818,7 @@ class FakeHost implements HostPlatform {
     final dir = destination ?? Directory.systemTemp.createTempSync('usb_dest_');
     dir.createSync(recursive: true);
     Directory? data;
-    if (layout == DiskLayout.fat32PlusNtfs) {
+    if (isDualVolumeLayout(layout)) {
       data = Directory('${dir.path}_data')..createSync(recursive: true);
     }
     return PreparedVolumes(bootMount: dir.path, dataMount: data?.path);
@@ -1274,8 +1882,9 @@ void _writeWindowsLayout(Directory root, {required int wimBytes}) {
   Directory(p.join(root.path, 'efi', 'boot')).createSync(recursive: true);
   File(p.join(root.path, 'efi', 'boot', 'bootx64.efi')).writeAsBytesSync([1]);
   Directory(p.join(root.path, 'sources')).createSync();
-  File(p.join(root.path, 'sources', 'install.wim'))
-      .writeAsBytesSync(List<int>.filled(wimBytes, 7));
+  File(
+    p.join(root.path, 'sources', 'install.wim'),
+  ).writeAsBytesSync(List<int>.filled(wimBytes, 7));
 }
 
 void _writeLinuxLayout(Directory root) {
@@ -1314,6 +1923,172 @@ List<int> _minimalLinuxIso() {
   bytes[dir + 32] = name.length;
   for (var i = 0; i < name.length; i++) {
     bytes[dir + 33 + i] = name.codeUnitAt(i);
+  }
+  return bytes;
+}
+
+void _writeMultibootStick({required Directory esp, required Directory data}) {
+  Directory(p.join(esp.path, 'EFI', 'BOOT')).createSync(recursive: true);
+  File(p.join(esp.path, 'EFI', 'BOOT', 'BOOTX64.EFI')).writeAsBytesSync([1, 2]);
+  Directory(p.join(esp.path, 'boot', 'grub')).createSync(recursive: true);
+  File(
+    p.join(esp.path, 'boot', 'grub', 'grub.cfg'),
+  ).writeAsStringSync('menuentry "placeholder" { reboot }\n');
+  Directory(p.join(data.path, 'isos')).createSync(recursive: true);
+  Directory(p.join(data.path, 'sources')).createSync(recursive: true);
+  Directory(p.join(data.path, 'efi', 'boot')).createSync(recursive: true);
+  File(p.join(data.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+  File(p.join(data.path, 'sources', 'install.wim')).writeAsBytesSync([1]);
+  File(p.join(data.path, 'efi', 'boot', 'bootx64.efi')).writeAsBytesSync([1]);
+}
+
+IsoProfile _linuxProfile(String mountPath) {
+  return IsoProfile(
+    mountPath: mountPath,
+    kind: IsoKind.linuxHybrid,
+    hasX64Efi: true,
+    hasArmEfi: false,
+    installKind: WindowsInstallImageKind.none,
+    installImagePath: null,
+    installImageSize: 0,
+    linuxMarkers: const ['casper'],
+  );
+}
+
+/// Minimal ISO 9660 image containing the given files (no Joliet).
+List<int> _isoWithFiles(Map<String, List<int>> files) {
+  const sector = 2048;
+  final dirs = <String>{''};
+  for (final path in files.keys) {
+    final parts = path.toLowerCase().split('/');
+    var prefix = '';
+    for (var i = 0; i < parts.length - 1; i++) {
+      prefix = prefix.isEmpty ? parts[i] : '$prefix/${parts[i]}';
+      dirs.add(prefix);
+    }
+  }
+  final dirList = dirs.toList()..sort();
+  final dirLba = <String, int>{};
+  var nextLba = 20;
+  for (final dir in dirList) {
+    dirLba[dir] = nextLba;
+    nextLba++;
+  }
+  final fileLba = <String, int>{};
+  final fileSize = <String, int>{};
+  for (final entry in files.entries) {
+    fileLba[entry.key.toLowerCase()] = nextLba;
+    fileSize[entry.key.toLowerCase()] = entry.value.length;
+    nextLba += (entry.value.length + sector - 1) ~/ sector;
+    if (nextLba == fileLba[entry.key.toLowerCase()]) {
+      nextLba++;
+    }
+  }
+
+  final bytes = List<int>.filled(nextLba * sector, 0);
+  bytes[510] = 0x55;
+  bytes[511] = 0xAA;
+  final pvd = 16 * sector;
+  bytes[pvd] = 1;
+  final id = 'CD001'.codeUnits;
+  for (var i = 0; i < id.length; i++) {
+    bytes[pvd + 1 + i] = id[i];
+  }
+  final volume = 'TESTISO'.padRight(32).codeUnits;
+  for (var i = 0; i < volume.length; i++) {
+    bytes[pvd + 40 + i] = volume[i];
+  }
+  bytes[pvd + 156] = 34;
+  bytes[pvd + 158] = dirLba['']!;
+  bytes[pvd + 166] = 0x00;
+  bytes[pvd + 167] = 0x08;
+
+  List<int> recordFor({
+    required String name,
+    required int lba,
+    required int size,
+    required bool directory,
+  }) {
+    final upper = name.toUpperCase();
+    var length = 33 + upper.length;
+    if (length.isOdd) {
+      length++;
+    }
+    final record = List<int>.filled(length, 0);
+    record[0] = length;
+    record[2] = lba & 0xff;
+    record[3] = (lba >> 8) & 0xff;
+    record[4] = (lba >> 16) & 0xff;
+    record[5] = (lba >> 24) & 0xff;
+    record[10] = size & 0xff;
+    record[11] = (size >> 8) & 0xff;
+    record[12] = (size >> 16) & 0xff;
+    record[13] = (size >> 24) & 0xff;
+    if (directory) {
+      record[25] = 2;
+    }
+    record[32] = upper.length;
+    for (var i = 0; i < upper.length; i++) {
+      record[33 + i] = upper.codeUnitAt(i);
+    }
+    return record;
+  }
+
+  for (final dir in dirList) {
+    final children = <List<int>>[];
+    for (final other in dirList) {
+      if (other == dir) {
+        continue;
+      }
+      final parent = other.contains('/')
+          ? other.substring(0, other.lastIndexOf('/'))
+          : '';
+      if (parent != dir) {
+        continue;
+      }
+      final name = other.contains('/')
+          ? other.substring(other.lastIndexOf('/') + 1)
+          : other;
+      children.add(
+        recordFor(
+          name: name,
+          lba: dirLba[other]!,
+          size: sector,
+          directory: true,
+        ),
+      );
+    }
+    for (final file in files.keys) {
+      final key = file.toLowerCase();
+      final parent = key.contains('/')
+          ? key.substring(0, key.lastIndexOf('/'))
+          : '';
+      if (parent != dir) {
+        continue;
+      }
+      final name = key.contains('/')
+          ? key.substring(key.lastIndexOf('/') + 1)
+          : key;
+      children.add(
+        recordFor(
+          name: name,
+          lba: fileLba[key]!,
+          size: fileSize[key]!,
+          directory: false,
+        ),
+      );
+    }
+    var offset = dirLba[dir]! * sector;
+    for (final record in children) {
+      bytes.setRange(offset, offset + record.length, record);
+      offset += record.length;
+    }
+  }
+
+  for (final entry in files.entries) {
+    final key = entry.key.toLowerCase();
+    final start = fileLba[key]! * sector;
+    bytes.setRange(start, start + entry.value.length, entry.value);
   }
   return bytes;
 }

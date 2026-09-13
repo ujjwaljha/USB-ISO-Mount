@@ -59,6 +59,35 @@ Future<void> copyDirectory(
   }
 }
 
+/// Copies one file, reporting progress as bytes are written.
+Future<void> copyFileWithProgress(
+  String source,
+  String destination, {
+  CopyProgress? onProgress,
+  CancellationToken? cancellation,
+}) async {
+  final file = File(source);
+  if (!file.existsSync()) {
+    throw FileSystemException('Source file does not exist', source);
+  }
+  final total = await file.length();
+  await File(destination).parent.create(recursive: true);
+  final output = File(destination).openWrite();
+  var copied = 0;
+  onProgress?.call(0, total);
+  try {
+    await for (final chunk in file.openRead()) {
+      cancellation?.throwIfCancelled(diskAlreadyErased: true);
+      output.add(chunk);
+      copied += chunk.length;
+      onProgress?.call(copied, total);
+    }
+    await output.flush();
+  } finally {
+    await output.close();
+  }
+}
+
 bool isInstallWim(String relativePath) {
   final normalized = relativePath.replaceAll(r'\', '/').toLowerCase();
   return normalized == 'sources/install.wim';

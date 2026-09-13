@@ -13,6 +13,8 @@ Future<int> run(List<String> arguments) async {
         ..addCommand(MountCommand())
         ..addCommand(UnmountCommand())
         ..addCommand(MakeCommand())
+        ..addCommand(AddCommand())
+        ..addCommand(RefreshCommand())
         ..addCommand(FormatCommand());
 
   try {
@@ -188,7 +190,13 @@ class UnmountCommand extends Command<int> {
 class MakeCommand extends Command<int> {
   MakeCommand() {
     argParser
-      ..addOption('iso', abbr: 'i', help: 'Path to a Windows or Linux ISO.')
+      ..addMultiOption(
+        'iso',
+        abbr: 'i',
+        help:
+            'Path to a Windows or Linux ISO. Repeat for a multiboot USB '
+            '(Windows + Ubuntu on the same stick).',
+      )
       ..addOption(
         'disk',
         abbr: 'd',
@@ -217,17 +225,18 @@ class MakeCommand extends Command<int> {
 
   @override
   String get description =>
-      'Erase a USB drive and write a bootable Windows or Linux image.';
+      'Erase a USB drive and write a bootable Windows or Linux image, '
+      'or a multiboot stick from two or more --iso values.';
 
   @override
   Future<int> run() async {
-    final iso = argResults?['iso'] as String?;
+    final isos = List<String>.from(argResults?['iso'] as List? ?? const []);
     final diskArg = argResults?['disk'] as String?;
     final yes = argResults?['yes'] as bool? ?? false;
     final dryRun = argResults?['dry-run'] as bool? ?? false;
     final advanced = argResults?['advanced'] as bool? ?? false;
 
-    if (iso == null || iso.isEmpty) {
+    if (isos.isEmpty) {
       throw UsageException('Missing --iso', usage);
     }
     if (diskArg == null || diskArg.isEmpty) {
@@ -262,11 +271,196 @@ class MakeCommand extends Command<int> {
       token.cancel();
     });
     try {
-      await for (final progress in BootableWriter().write(
-        WriteRequest(
-          isoPath: iso,
+      final writer = BootableWriter();
+      final stream = isos.length == 1
+          ? writer.write(
+              WriteRequest(
+                isoPath: isos.single,
+                disk: disk,
+                confirmed: true,
+                dryRun: dryRun,
+                allowAdvancedTargets: advanced,
+                cancellation: token,
+              ),
+            )
+          : writer.writeMulti(
+              MultiWriteRequest(
+                isoPaths: isos,
+                disk: disk,
+                confirmed: true,
+                dryRun: dryRun,
+                allowAdvancedTargets: advanced,
+                cancellation: token,
+              ),
+            );
+      await for (final progress in stream) {
+        printer.add(progress);
+      }
+      printer.finish();
+    } on WriteCancelledException catch (error) {
+      printer.finish();
+      stderr.writeln(error.message);
+      return 1;
+    } finally {
+      await sigint.cancel();
+    }
+    return 0;
+  }
+}
+
+class AddCommand extends Command<int> {
+  AddCommand() {
+    argParser
+      ..addMultiOption(
+        'iso',
+        abbr: 'i',
+        help:
+            'Path to a Windows or Linux ISO. Repeat to add several without '
+            'erasing the stick.',
+      )
+      ..addOption(
+        'disk',
+        abbr: 'd',
+        help: 'Whole-disk id from `usb_iso list` (disk4, 1, or sda).',
+      )
+      ..addFlag(
+        'yes',
+        abbr: 'y',
+        help: 'Skip the interactive ADD confirmation.',
+        negatable: false,
+      )
+      ..addFlag('dry-run', help: 'Validate without copying.', negatable: false)
+      ..addFlag(
+        'advanced',
+        help: 'Allow SD or Thunderbolt targets listed with `list --advanced`.',
+        negatable: false,
+      );
+  }
+
+  @override
+  String get name => 'add';
+
+  @override
+  String get description =>
+      'Copy one or more ISOs onto an existing multiboot USB without erasing it.';
+
+  @override
+  Future<int> run() async {
+    final isos = List<String>.from(argResults?['iso'] as List? ?? const []);
+    final diskArg = argResults?['disk'] as String?;
+    final yes = argResults?['yes'] as bool? ?? false;
+    final dryRun = argResults?['dry-run'] as bool? ?? false;
+    final advanced = argResults?['advanced'] as bool? ?? false;
+    if (isos.isEmpty) {
+      throw UsageException('Missing --iso', usage);
+    }
+    if (diskArg == null || diskArg.isEmpty) {
+      throw UsageException('Missing --disk', usage);
+    }
+    final id = DiskId.normalize(diskArg);
+    final disk = await _listedDisk(id, advanced: advanced);
+    if (disk == null) {
+      throw UnsafeDiskException(
+        'Disk $id is not a listed removable USB drive. Run `usb_iso list`.',
+      );
+    }
+    if (!dryRun) {
+      await WindowsPrivilege.ensureAdministrator();
+    }
+    if (!dryRun && !yes) {
+      if (!confirmAdd(disk)) {
+        stderr.writeln('Aborted.');
+        return 1;
+      }
+    }
+    stdout.writeln('Target: ${disk.label}');
+    final token = CancellationToken();
+    final printer = CliProgressWriter();
+    final sigint = ProcessSignal.sigint.watch().listen((_) {
+      stderr.writeln('Cancel requested…');
+      token.cancel();
+    });
+    try {
+      final writer = BootableWriter();
+      for (final iso in isos) {
+        stdout.writeln('Add: $iso');
+        await for (final progress in writer.addIso(
+          MultiAddRequest(
+            isoPath: iso,
+            disk: disk,
+            confirmed: true,
+            dryRun: dryRun,
+            allowAdvancedTargets: advanced,
+            cancellation: token,
+          ),
+        )) {
+          printer.add(progress);
+        }
+        printer.finish();
+      }
+    } on WriteCancelledException catch (error) {
+      printer.finish();
+      stderr.writeln(error.message);
+      return 1;
+    } finally {
+      await sigint.cancel();
+    }
+    return 0;
+  }
+}
+
+class RefreshCommand extends Command<int> {
+  RefreshCommand() {
+    argParser
+      ..addOption(
+        'disk',
+        abbr: 'd',
+        help: 'Whole-disk id from `usb_iso list` (disk4, 1, or sda).',
+      )
+      ..addFlag(
+        'dry-run',
+        help: 'Show the menu that would be written.',
+        negatable: false,
+      )
+      ..addFlag(
+        'advanced',
+        help: 'Allow SD or Thunderbolt targets listed with `list --advanced`.',
+        negatable: false,
+      );
+  }
+
+  @override
+  String get name => 'refresh';
+
+  @override
+  String get description =>
+      'Rebuild the GRUB menu from ISOs already on a multiboot USB.';
+
+  @override
+  Future<int> run() async {
+    final diskArg = argResults?['disk'] as String?;
+    final dryRun = argResults?['dry-run'] as bool? ?? false;
+    final advanced = argResults?['advanced'] as bool? ?? false;
+    if (diskArg == null || diskArg.isEmpty) {
+      throw UsageException('Missing --disk', usage);
+    }
+    final id = DiskId.normalize(diskArg);
+    final disk = await _listedDisk(id, advanced: advanced);
+    if (disk == null) {
+      throw UnsafeDiskException(
+        'Disk $id is not a listed removable USB drive. Run `usb_iso list`.',
+      );
+    }
+    if (!dryRun) {
+      await WindowsPrivilege.ensureAdministrator();
+    }
+    stdout.writeln('Target: ${disk.label}');
+    final token = CancellationToken();
+    final printer = CliProgressWriter();
+    try {
+      await for (final progress in BootableWriter().refreshMenu(
+        MultiRefreshRequest(
           disk: disk,
-          confirmed: true,
           dryRun: dryRun,
           allowAdvancedTargets: advanced,
           cancellation: token,
@@ -279,8 +473,6 @@ class MakeCommand extends Command<int> {
       printer.finish();
       stderr.writeln(error.message);
       return 1;
-    } finally {
-      await sigint.cancel();
     }
     return 0;
   }
@@ -411,6 +603,21 @@ Future<UsbDisk?> _listedDisk(String id, {required bool advanced}) async {
     }
   }
   return null;
+}
+
+bool confirmAdd(UsbDisk disk) {
+  if (!stdin.hasTerminal) {
+    stderr.writeln(
+      'Refusing to change ${disk.id} without --yes (stdin is not a terminal).',
+    );
+    return false;
+  }
+  stdout.writeln(
+    'Copy onto the existing multiboot USB ${disk.label} (not erased). '
+    'Type ADD to continue:',
+  );
+  final line = stdin.readLineSync();
+  return line?.trim() == 'ADD';
 }
 
 bool confirmErase(UsbDisk disk) {

@@ -10,6 +10,11 @@ export 'src/bytes.dart'
         wimSplitSizeMiB,
         windowsFat32PartitionMaxBytes,
         windowsFat32BootPartitionBytes,
+        efiSystemPartitionMiB,
+        efiSystemPartitionBytes,
+        efiBootVolumeLabel,
+        isoBootVolumeLabel,
+        multibootIsoFolder,
         rawWriteChunkBytes;
 export 'src/cancellation.dart';
 export 'src/disk_enumerator.dart';
@@ -18,11 +23,20 @@ export 'src/disk_id.dart';
 export 'src/disk_layout.dart';
 export 'src/exceptions.dart';
 export 'src/file_copy.dart'
-    show firstOversizedFat32File, isInstallWim, isInstallImage;
+    show
+        firstOversizedFat32File,
+        isInstallWim,
+        isInstallImage,
+        copyFileWithProgress;
 export 'src/host_platform.dart';
+export 'src/grub_config.dart';
+export 'src/grub_installer.dart';
 export 'src/hybrid_iso.dart';
 export 'src/iso9660.dart';
 export 'src/iso_inspector.dart';
+export 'src/linux_boot_files.dart';
+export 'src/multiboot_disk.dart';
+export 'src/multiboot_plan.dart';
 export 'src/iso_mounter.dart';
 export 'src/iso_validator.dart';
 export 'src/layout_chooser.dart';
@@ -33,7 +47,11 @@ export 'src/models/windows_iso_info.dart';
 export 'src/models/write_progress.dart';
 export 'src/paths.dart';
 export 'src/platforms/linux_host.dart'
-    show usbDiskFromLinuxInfo, linuxBootDiskName;
+    show
+        usbDiskFromLinuxInfo,
+        linuxBootDiskName,
+        linuxPartitionDevice,
+        linuxEfiPlusExfatPartedArgs;
 export 'src/platforms/macos_host.dart'
     show
         usbDiskFromMacosInfo,
@@ -43,12 +61,14 @@ export 'src/platforms/macos_host.dart'
         isoMountFromInfoPlist,
         macosAuthopenFailureMessage,
         macosAuthopenDeniedMessage,
-        macosAuthopenRawWritePython;
+        macosAuthopenRawWritePython,
+        macosEfiPlusExfatArgs;
 export 'src/platforms/windows_host.dart'
     show
         usbDiskFromWindowsInfo,
         isAdvancedWindowsBus,
-        windowsRawWritePowerShell;
+        windowsRawWritePowerShell,
+        windowsEfiPlusExfatPowerShell;
 export 'src/privilege.dart';
 export 'src/process_runner.dart';
 export 'src/safety.dart';

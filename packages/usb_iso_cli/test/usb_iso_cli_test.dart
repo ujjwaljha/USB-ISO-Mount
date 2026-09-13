@@ -15,6 +15,24 @@ void main() {
     expect(await run(['format', '--help']), 0);
   });
 
+  test('make help mentions repeating --iso for multiboot', () async {
+    expect(await run(['make', '--help']), 0);
+    final make = MakeCommand();
+    expect(make.description, contains('multiboot'));
+    expect(make.argParser.options['iso']!.help, contains('Repeat'));
+  });
+
+  test('add and refresh help describe the non-destructive path', () async {
+    expect(await run(['add', '--help']), 0);
+    expect(await run(['refresh', '--help']), 0);
+    final add = AddCommand();
+    expect(add.description, contains('without erasing'));
+    expect(add.argParser.options['iso']!.help, contains('Repeat'));
+    expect(add.argParser.options['yes']!.help, contains('ADD'));
+    final refresh = RefreshCommand();
+    expect(refresh.description, contains('GRUB'));
+  });
+
   test('rewrites a TTY write line and prints other steps once', () {
     final buffer = StringBuffer();
     final printer = CliProgressWriter(sink: buffer, tty: true);

@@ -16,6 +16,43 @@ import '../volume_filesystem.dart';
 
 const _volumeLabel = 'WINSETUP';
 
+/// Whole-disk path plus partition number (`/dev/sda1`, `/dev/nvme0n1p1`).
+String linuxPartitionDevice(String devicePath, int number) {
+  final name = p.basename(devicePath);
+  if (RegExp(r'\d$').hasMatch(name)) {
+    return '${devicePath}p$number';
+  }
+  return '$devicePath$number';
+}
+
+/// `parted` arguments for a FAT32 ESP + exFAT ISO volume.
+List<String> linuxEfiPlusExfatPartedArgs(String devicePath) {
+  final end = '${efiSystemPartitionMiB + 1}MiB';
+  return [
+    '-s',
+    devicePath,
+    'mklabel',
+    'gpt',
+    'mkpart',
+    'EFI',
+    'fat32',
+    '1MiB',
+    end,
+    'set',
+    '1',
+    'esp',
+    'on',
+    'set',
+    '1',
+    'boot',
+    'on',
+    'mkpart',
+    isoBootVolumeLabel,
+    end,
+    '100%',
+  ];
+}
+
 bool isAdvancedLinuxTransport(String tran, String name) {
   final bus = tran.toUpperCase();
   if (bus == 'MMC' || bus == 'SD' || bus == 'SECURE DIGITAL') {
@@ -265,6 +302,9 @@ class LinuxHost implements HostPlatform {
         );
       }
     }
+    if (layout == DiskLayout.efiPlusExfat) {
+      await _requireMkfs(VolumeFilesystem.exfat);
+    }
 
     await _unmountDisk(disk);
     final wipe = await _runner.run('wipefs', [
@@ -273,6 +313,47 @@ class LinuxHost implements HostPlatform {
     ], elevated: true);
     if (!wipe.success) {
       throw UsbIsoException('Failed to wipe ${disk.id}: ${wipe.stderr.trim()}');
+    }
+
+    if (layout == DiskLayout.efiPlusExfat) {
+      final parted = await _runner.run(
+        'parted',
+        linuxEfiPlusExfatPartedArgs(disk.devicePath),
+        elevated: true,
+      );
+      if (!parted.success) {
+        throw UsbIsoException(
+          'Failed to partition ${disk.id}: ${parted.stderr.trim()}',
+        );
+      }
+      await _runner.run('partprobe', [disk.devicePath], elevated: true);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final bootDev = linuxPartitionDevice(disk.devicePath, 1);
+      final dataDev = linuxPartitionDevice(disk.devicePath, 2);
+      final fat = await _runner.run('mkfs.vfat', [
+        '-F',
+        '32',
+        '-n',
+        efiBootVolumeLabel,
+        bootDev,
+      ], elevated: true);
+      if (!fat.success) {
+        throw UsbIsoException(
+          'Failed to format $efiBootVolumeLabel on ${disk.id}: ${fat.stderr.trim()}',
+        );
+      }
+      final mkfs = await _requireMkfs(VolumeFilesystem.exfat);
+      final exfat = await _runner.run(mkfs.executable, [
+        ...mkfs.arguments,
+        if (mkfs.labelFlag != null) ...[mkfs.labelFlag!, isoBootVolumeLabel],
+        dataDev,
+      ], elevated: true);
+      if (!exfat.success) {
+        throw UsbIsoException(
+          'Failed to format $isoBootVolumeLabel on ${disk.id}: ${exfat.stderr.trim()}',
+        );
+      }
+      return;
     }
 
     if (layout == DiskLayout.fat32PlusNtfs) {
@@ -458,11 +539,7 @@ class LinuxHost implements HostPlatform {
   }
 
   String _firstPartitionDevice(String devicePath) {
-    final name = p.basename(devicePath);
-    if (RegExp(r'\d$').hasMatch(name)) {
-      return '${devicePath}p1';
-    }
-    return '${devicePath}1';
+    return linuxPartitionDevice(devicePath, 1);
   }
 
   Future<void> _unmountDisk(UsbDisk disk) async {
@@ -491,14 +568,11 @@ class LinuxHost implements HostPlatform {
   }) async {
     for (var i = 0; i < 40; i++) {
       await _runner.run('partprobe', [disk.devicePath], elevated: true);
-      final bootDev = '${disk.devicePath}1';
-      final dataDev = '${disk.devicePath}2';
-      final boot = await _ensureMounted(
-        bootDev,
-        layout == DiskLayout.fat32PlusNtfs ? 'WINBOOT' : _volumeLabel,
-      );
-      if (layout == DiskLayout.fat32PlusNtfs) {
-        final data = await _ensureMounted(dataDev, _volumeLabel);
+      final bootDev = linuxPartitionDevice(disk.devicePath, 1);
+      final dataDev = linuxPartitionDevice(disk.devicePath, 2);
+      final boot = await _ensureMounted(bootDev, bootVolumeLabelFor(layout));
+      if (isDualVolumeLayout(layout)) {
+        final data = await _ensureMounted(dataDev, dataVolumeLabelFor(layout)!);
         if (boot != null && data != null) {
           return PreparedVolumes(bootMount: boot, dataMount: data);
         }

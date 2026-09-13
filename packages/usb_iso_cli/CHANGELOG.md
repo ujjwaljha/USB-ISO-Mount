@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+- `make --iso Win11.iso --iso ubuntu.iso` writes a GRUB multiboot USB
+- `add --iso` copies one or more images onto an existing multiboot USB
+- `refresh` rebuilds the GRUB menu from files already on the stick
+
 ## 1.2.0
 
 - `format --disk` erases a USB and formats it as FAT32, exFAT, or NTFS
