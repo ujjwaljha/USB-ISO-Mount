@@ -1366,10 +1366,59 @@ image-type      : read/write
       expect(plan.linux, hasLength(1));
       final cfg = buildGrubConfig(plan);
       expect(cfg, contains('chainloader /efi/boot/bootx64.efi'));
+      expect(cfg, contains('/Sources/boot.wim'));
+      expect(cfg, contains('/EFI/BOOT/BOOTX64.EFI'));
+      expect(
+        cfg,
+        contains(
+          'if search --file --no-floppy --set=root /sources/boot.wim; then',
+        ),
+      );
       expect(cfg, contains('/isos/ubuntu.iso'));
       expect(cfg, contains('iso-scan/filename=/isos/ubuntu.iso'));
       expect(cfg, contains('loopback loop'));
     });
+
+    test(
+      'accepts a Linux ISO classified as unknown when boot files are found',
+      () {
+        final winIso = File(p.join(temp.path, 'Win11.iso'))
+          ..writeAsBytesSync(List<int>.filled(2048, 1));
+        final linuxIso = File(p.join(temp.path, 'mystery.iso'))
+          ..writeAsBytesSync(List<int>.filled(2048, 2));
+        final win = Directory(p.join(temp.path, 'win'))..createSync();
+        _writeWindowsLayout(win, wimBytes: 8);
+        File(p.join(win.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+        final plan = planMultiboot(
+          drafts: [
+            MultiIsoDraft(
+              isoPath: winIso.path,
+              profile: IsoInspector().inspectMounted(win.path),
+              mountPath: win.path,
+            ),
+            MultiIsoDraft(
+              isoPath: linuxIso.path,
+              profile: const IsoProfile(
+                mountPath: '',
+                kind: IsoKind.unknown,
+                hasX64Efi: false,
+                hasArmEfi: false,
+                installKind: WindowsInstallImageKind.none,
+                installImagePath: null,
+                installImageSize: 0,
+              ),
+              linuxBoot: const LinuxBootFiles(
+                kernelPath: 'casper/vmlinuz',
+                initrdPath: 'casper/initrd',
+                kind: LinuxLiveKind.casper,
+              ),
+            ),
+          ],
+          diskSizeBytes: 64 * 1024 * 1024 * 1024,
+        );
+        expect(plan.linux, hasLength(1));
+      },
+    );
 
     test('detects mounted EFIBOOT + ISOBOOT volumes', () {
       final temp = Directory.systemTemp.createTempSync('usb_iso_detect_');
@@ -1386,6 +1435,28 @@ image-type      : read/write
       expect(volumes!.bootMount, esp.path);
       expect(volumes.dataMount, data.path);
       expect(planFromMultibootVolume(data.path).windows, isNotNull);
+      expect(looksLikeMultibootDisk([data.path]), isTrue);
+      expect(looksLikeMultibootDisk([esp.path]), isTrue);
+    });
+
+    test('records /isos files that cannot be probed as live images', () {
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      Directory(p.join(data.path, 'isos')).createSync(recursive: true);
+      File(p.join(data.path, 'isos', 'notes.iso')).writeAsBytesSync([1, 2, 3]);
+      File(p.join(data.path, 'sources', 'boot.wim'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync([1]);
+      final plan = planFromMultibootVolume(data.path);
+      expect(plan.windows, isNotNull);
+      expect(plan.skippedIsoFileNames, contains('notes.iso'));
+    });
+
+    test('looksLikeMultibootDisk is true when only /isos is mounted', () {
+      final data = Directory(p.join(temp.path, 'data'))..createSync();
+      Directory(p.join(data.path, 'isos')).createSync();
+      expect(detectMultibootMounts([data.path]), isNull);
+      expect(looksLikeMultibootDisk([data.path]), isTrue);
+      expect(looksLikeMultibootDisk(['/Volumes/WINSETUP']), isFalse);
     });
 
     test('refuses an add that will not fit on the stick', () {
@@ -1397,9 +1468,9 @@ image-type      : read/write
       });
       final data = Directory(p.join(temp.path, 'data'))..createSync();
       Directory(p.join(data.path, 'isos')).createSync();
-      File(p.join(data.path, 'isos', 'ubuntu.iso')).writeAsBytesSync(
-        List<int>.filled(8 * 1024 * 1024, 1),
-      );
+      File(
+        p.join(data.path, 'isos', 'ubuntu.iso'),
+      ).writeAsBytesSync(List<int>.filled(8 * 1024 * 1024, 1));
       expect(volumeUsedBytes(data.path), greaterThan(0));
       expect(
         () => ensureMultibootAddFits(
@@ -1661,16 +1732,19 @@ image-type      : read/write
             .toList(),
         throwsA(isA<WriteCancelledException>()),
       );
-      expect(File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(), isFalse);
+      expect(
+        File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(),
+        isFalse,
+      );
     });
 
     test('refresh refuses a stick with no menu entries', () async {
       final dest = Directory(p.join(temp.path, 'esp'))..createSync();
       final data = Directory(p.join(temp.path, 'data'))..createSync();
       Directory(p.join(dest.path, 'boot', 'grub')).createSync(recursive: true);
-      File(p.join(dest.path, 'boot', 'grub', 'grub.cfg')).writeAsStringSync(
-        'menuentry "empty" { reboot }\n',
-      );
+      File(
+        p.join(dest.path, 'boot', 'grub', 'grub.cfg'),
+      ).writeAsStringSync('menuentry "empty" { reboot }\n');
       Directory(p.join(data.path, 'isos')).createSync(recursive: true);
       final host = FakeHost(
         mount: const IsoMount(isoPath: '/iso', mountPath: '/mnt'),

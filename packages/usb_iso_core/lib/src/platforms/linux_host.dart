@@ -559,6 +559,15 @@ class LinuxHost implements HostPlatform {
         }
       }
     }
+    // waitForVolumeMount may have attached partitions under /tmp/usb_iso_*.
+    for (final number in const [1, 2]) {
+      final device = linuxPartitionDevice(disk.devicePath, number);
+      final find = await _runner.run('findmnt', ['-n', '-o', 'TARGET', device]);
+      final mount = find.stdout.trim();
+      if (find.success && mount.isNotEmpty) {
+        await _runner.run('umount', [mount], elevated: true);
+      }
+    }
   }
 
   @override
@@ -591,7 +600,9 @@ class LinuxHost implements HostPlatform {
     if (find.success && find.stdout.trim().isNotEmpty) {
       return find.stdout.trim();
     }
-    final dir = Directory(p.join('/tmp', 'usb_iso_$label'));
+    final dir = Directory(
+      p.join(Directory.systemTemp.path, 'usb_iso_${p.basename(device)}_$label'),
+    );
     dir.createSync(recursive: true);
     final mount = await _runner.run('mount', [
       device,

@@ -34,10 +34,17 @@ class MultiIsoItem {
 }
 
 class MultiIsoPlan {
-  const MultiIsoPlan({required this.items, required this.requiredBytes});
+  const MultiIsoPlan({
+    required this.items,
+    required this.requiredBytes,
+    this.skippedIsoFileNames = const [],
+  });
 
   final List<MultiIsoItem> items;
   final int requiredBytes;
+
+  /// `.iso` files under `/isos` that could not be turned into a menu entry.
+  final List<String> skippedIsoFileNames;
 
   MultiIsoItem? get windows {
     for (final item in items) {
@@ -138,8 +145,7 @@ MultiIsoPlan planMultiboot({
             ? probeLinuxBootFromTree(draft.mountPath!)
             : null) ??
         probeLinuxBootFromIso(draft.isoPath);
-    if (linuxBoot == null ||
-        (!isLinuxLiveKind(kind) && kind != IsoKind.genericUefi)) {
+    if (linuxBoot == null) {
       throw InvalidIsoException(
         '${p.basename(draft.isoPath)} is not a Windows installer or a Linux '
         'live image that this app can put on a GRUB menu. Ubuntu, Debian Live, '

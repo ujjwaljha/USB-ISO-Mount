@@ -79,7 +79,11 @@ class GrubInstaller {
     for (final iso in linuxIsos) {
       for (final relative in const [
         'efi/boot/bootx64.efi',
+        'EFI/BOOT/BOOTX64.EFI',
+        'EFI/Boot/bootx64.efi',
         'efi/boot/grubx64.efi',
+        'EFI/BOOT/grubx64.efi',
+        'EFI/Boot/grubx64.efi',
       ]) {
         final entry = findIso9660Path(iso, relative);
         if (entry == null || entry.isDirectory) {
