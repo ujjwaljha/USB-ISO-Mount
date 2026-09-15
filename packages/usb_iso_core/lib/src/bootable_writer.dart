@@ -465,22 +465,6 @@ class BootableWriter {
         );
       }
 
-      yield const WriteProgress(
-        step: WriteStep.copying,
-        message: 'Installing the GRUB boot menu…',
-        percent: 0.2,
-      );
-      final grubCfg = buildGrubConfig(plan);
-      await _grub.install(
-        espMount: volumes.bootMount,
-        grubCfg: grubCfg,
-        linuxMountPaths: [
-          for (final item in plan.linux)
-            if (item.mountPath != null) item.mountPath!,
-        ],
-        linuxIsoPaths: [for (final item in plan.linux) item.isoPath],
-      );
-
       final isoDir = Directory(p.join(dataMount, multibootIsoFolder));
       await isoDir.create(recursive: true);
 
@@ -545,6 +529,22 @@ class BootableWriter {
       );
 
       request.cancellation?.throwIfCancelled(diskAlreadyErased: true);
+      yield const WriteProgress(
+        step: WriteStep.copying,
+        message: 'Installing the GRUB boot menu…',
+        percent: 0.88,
+      );
+      final grubCfg = buildGrubConfig(plan);
+      await _grub.install(
+        espMount: volumes.bootMount,
+        grubCfg: grubCfg,
+        linuxMountPaths: [
+          for (final item in plan.linux)
+            if (item.mountPath != null) item.mountPath!,
+        ],
+        linuxIsoPaths: [for (final item in plan.linux) item.isoPath],
+      );
+
       yield const WriteProgress(
         step: WriteStep.verifying,
         message: 'Verifying the multiboot USB…',
@@ -734,12 +734,16 @@ class BootableWriter {
     final plan = planFromMultibootVolume(volumes.dataMount!);
     ensureMultibootPlanNotEmpty(plan);
     if (request.dryRun) {
+      final skipped = plan.skippedIsoFileNames.isEmpty
+          ? ''
+          : '\nSkipped (not a supported Linux live ISO):\n'
+                '${plan.skippedIsoFileNames.map((name) => '  • $name').join('\n')}';
       yield WriteProgress(
         step: WriteStep.done,
         message:
             'Dry run — GRUB will not be rewritten.\n'
             'Target: ${request.disk.label}\n'
-            'Menu:\n${plan.summary.isEmpty ? '  (empty)' : plan.summary}',
+            'Menu:\n${plan.summary.isEmpty ? '  (empty)' : plan.summary}$skipped',
         percent: 1,
       );
       return;
@@ -757,10 +761,14 @@ class BootableWriter {
       grubCfg: buildGrubConfig(plan),
     );
     await _host.flushDisk(request.disk);
+    final skipped = plan.skippedIsoFileNames.isEmpty
+        ? ''
+        : ' Skipped ${plan.skippedIsoFileNames.join(', ')} '
+              '(not a supported Linux live ISO).';
     yield WriteProgress(
       step: WriteStep.done,
       message:
-          'GRUB menu updated (${plan.items.length} ${plan.items.length == 1 ? 'entry' : 'entries'}).',
+          'GRUB menu updated (${plan.items.length} ${plan.items.length == 1 ? 'entry' : 'entries'}).$skipped',
       percent: 1,
     );
   }
@@ -860,9 +868,9 @@ class BootableWriter {
       ..writeln('Menu:')
       ..writeln(plan.summary)
       ..writeln(
-        'Steps: erase EFI+exFAT → install GRUB → copy Linux ISOs → '
+        'Steps: erase EFI+exFAT → copy Linux ISOs → '
         '${plan.windows == null ? '' : 'extract Windows → '}'
-        'write menu → eject.',
+        'install GRUB → write menu → eject.',
       );
     return buffer.toString().trim();
   }
@@ -884,10 +892,16 @@ class BootableWriter {
         'Verification failed: boot/grub/grub.cfg is missing or empty.',
       );
     }
-    if (!cfg.readAsStringSync().contains(
-          plan.items.first.menuTitle.split('"').first,
-        ) &&
-        !grubCfg.contains('menuentry')) {
+    final written = cfg.readAsStringSync();
+    for (final item in plan.items) {
+      final title = item.menuTitle.split('"').first;
+      if (title.isEmpty || !written.contains(title)) {
+        throw UsbIsoException(
+          'Verification failed: the GRUB menu is missing "${item.menuTitle}".',
+        );
+      }
+    }
+    if (!written.contains('menuentry') || !grubCfg.contains('menuentry')) {
       throw UsbIsoException(
         'Verification failed: the GRUB menu is incomplete.',
       );

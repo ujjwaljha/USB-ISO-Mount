@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:usb_iso_core/usb_iso_core.dart';
+import 'package:usb_iso_mount/home_page.dart';
 import 'package:usb_iso_mount/main.dart';
 
 void main() {
@@ -92,5 +93,60 @@ void main() {
     await tester.tap(find.text('Add ISO to this USB'));
     await tester.pumpAndSettle();
     expect(find.text('Choose an ISO to add first.'), findsOneWidget);
+  });
+
+  testWidgets('shows add when only the ISOBOOT volume is mounted', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final root = Directory.systemTemp.createTempSync('multiboot_data_only_');
+    addTearDown(() {
+      if (root.existsSync()) {
+        root.deleteSync(recursive: true);
+      }
+    });
+    Directory('${root.path}/data/isos').createSync(recursive: true);
+    final disk = UsbDisk(
+      id: 'disk70',
+      devicePath: '/dev/disk70',
+      name: 'SanDisk',
+      sizeBytes: 61530439680,
+      busProtocol: 'USB',
+      isRemovable: true,
+      isInternal: false,
+      isBoot: false,
+      isVirtual: false,
+      mountPoints: ['${root.path}/data'],
+    );
+    await tester.pumpWidget(UsbIsoApp(listDisks: () async => [disk]));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Add ISO to this USB'), 200);
+    expect(find.text('Add ISO to this USB'), findsOneWidget);
+    expect(find.text('Refresh GRUB menu'), findsOneWidget);
+  });
+
+  test('warning distinguishes wipe vs add on an existing multiboot stick', () {
+    expect(
+      warningBannerMessage(
+        target: 'SanDisk (disk4)',
+        makingMultiboot: true,
+        existingMultiboot: true,
+        rawLinux: false,
+      ),
+      contains('Make multiboot USB erases'),
+    );
+    expect(
+      warningBannerMessage(
+        target: 'SanDisk (disk4)',
+        makingMultiboot: false,
+        existingMultiboot: true,
+        rawLinux: false,
+      ),
+      contains('without erasing'),
+    );
   });
 }

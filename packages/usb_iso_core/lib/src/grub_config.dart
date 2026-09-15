@@ -44,22 +44,57 @@ String grubTrampolineConfig() {
 }
 
 void _writeWindowsEntry(StringBuffer buffer, MultiIsoItem item) {
-  final searchFile = item.profile.bootWimPath != null
-      ? '/sources/boot.wim'
-      : item.profile.installImagePath != null
-      ? '/sources/${_basename(item.profile.installImagePath!)}'
-      : '/sources/boot.wim';
-  final efi = item.profile.hasArmEfi && !item.profile.hasX64Efi
-      ? '/efi/boot/bootaa64.efi'
-      : '/efi/boot/bootx64.efi';
+  final searchFiles = <String>{
+    if (item.profile.bootWimPath != null) ...[
+      '/sources/boot.wim',
+      '/Sources/boot.wim',
+    ],
+    if (item.profile.installImagePath != null)
+      '/sources/${_basename(item.profile.installImagePath!)}',
+    '/sources/boot.wim',
+    '/Sources/boot.wim',
+    '/sources/install.wim',
+    '/Sources/install.wim',
+    '/sources/install.esd',
+    '/Sources/install.esd',
+  };
+  final efiFiles = item.profile.hasArmEfi && !item.profile.hasX64Efi
+      ? const [
+          '/efi/boot/bootaa64.efi',
+          '/EFI/BOOT/BOOTAA64.EFI',
+          '/EFI/Boot/bootaa64.efi',
+        ]
+      : const [
+          '/efi/boot/bootx64.efi',
+          '/EFI/BOOT/BOOTX64.EFI',
+          '/EFI/Boot/bootx64.efi',
+        ];
   buffer
     ..writeln('menuentry "${_escape(item.menuTitle)}" {')
     ..writeln('    insmod part_gpt')
     ..writeln('    insmod exfat')
     ..writeln('    insmod ntfs')
-    ..writeln('    insmod fat')
-    ..writeln('    search --file --no-floppy --set=root $searchFile')
-    ..writeln('    chainloader $efi')
+    ..writeln('    insmod fat');
+  var first = true;
+  for (final file in searchFiles) {
+    final cmd = 'search --file --no-floppy --set=root $file';
+    buffer.writeln(first ? '    if $cmd; then' : '    elif $cmd; then');
+    buffer.writeln('        true');
+    first = false;
+  }
+  buffer.writeln('    fi');
+  first = true;
+  for (final efi in efiFiles) {
+    buffer.writeln(
+      first ? '    if [ -f $efi ]; then' : '    elif [ -f $efi ]; then',
+    );
+    buffer.writeln('        chainloader $efi');
+    first = false;
+  }
+  buffer
+    ..writeln('    else')
+    ..writeln('        chainloader ${efiFiles.first}')
+    ..writeln('    fi')
     ..writeln('}')
     ..writeln();
 }

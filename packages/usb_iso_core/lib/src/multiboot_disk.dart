@@ -38,6 +38,26 @@ bool isMultibootDisk(Iterable<String> mountPoints) {
   return detectMultibootMounts(mountPoints) != null;
 }
 
+/// True when at least one mount looks like this app's GRUB ESP or `/isos`.
+///
+/// Used by the GUI so Add/Refresh stay visible when only ISOBOOT is mounted.
+/// A regular Windows installer USB (sources, no `/isos`, no GRUB) is ignored.
+bool looksLikeMultibootDisk(Iterable<String> mountPoints) {
+  if (detectMultibootMounts(mountPoints) != null) {
+    return true;
+  }
+  for (final mount in mountPoints) {
+    if (mount.isEmpty) {
+      continue;
+    }
+    if (_looksLikeEsp(mount) ||
+        Directory(p.join(mount, multibootIsoFolder)).existsSync()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool _looksLikeEsp(String mount) {
   // GRUB's config is unique to the EFI partition. Do not treat Windows
   // Setup's efi/boot/bootx64.efi on the data volume as the ESP.
@@ -138,6 +158,7 @@ MultiIsoPlan planFromMultibootVolume(String dataMount) {
     );
   }
 
+  final skipped = <String>[];
   final isoDir = Directory(p.join(dataMount, multibootIsoFolder));
   if (isoDir.existsSync()) {
     final files = isoDir.listSync().whereType<File>().toList()
@@ -148,6 +169,7 @@ MultiIsoPlan planFromMultibootVolume(String dataMount) {
       }
       final boot = probeLinuxBootFromIso(file.path);
       if (boot == null) {
+        skipped.add(p.basename(file.path));
         continue;
       }
       items.add(
@@ -172,7 +194,11 @@ MultiIsoPlan planFromMultibootVolume(String dataMount) {
     }
   }
 
-  return MultiIsoPlan(items: items, requiredBytes: 0);
+  return MultiIsoPlan(
+    items: items,
+    requiredBytes: 0,
+    skippedIsoFileNames: skipped,
+  );
 }
 
 /// Sum of regular files under [root] (used to estimate free space on ISOBOOT).

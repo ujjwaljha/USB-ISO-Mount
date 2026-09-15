@@ -433,7 +433,7 @@ class _HomePageState extends State<HomePage> {
     if (disk == null) {
       return false;
     }
-    return isMultibootDisk(disk.mountPoints);
+    return looksLikeMultibootDisk(disk.mountPoints);
   }
 
   Future<void> _addToMultiboot() async {
@@ -959,6 +959,33 @@ class _UsbCard extends StatelessWidget {
   }
 }
 
+String warningBannerMessage({
+  required String target,
+  required bool makingMultiboot,
+  required bool existingMultiboot,
+  required bool rawLinux,
+}) {
+  if (existingMultiboot && makingMultiboot) {
+    return 'Make multiboot USB erases every partition on $target, then writes '
+        'a new GRUB menu. Add ISO to this USB copies images without erasing.';
+  }
+  if (existingMultiboot) {
+    return 'This stick already has a GRUB menu. Add ISO to this USB copies '
+        'images without erasing. Make bootable still wipes $target first.';
+  }
+  if (makingMultiboot) {
+    return 'This erases every partition on $target, then installs a GRUB menu '
+        'so you can choose Windows Setup or a Linux live ISO at boot. '
+        'Use a spare stick.';
+  }
+  if (rawLinux) {
+    return 'This overwrites every partition on $target with the ISO image '
+        '(typical for a Linux live USB). Use a spare stick.';
+  }
+  return 'Make Bootable erases every file on $target. '
+      'Use a spare USB stick, not a backup drive.';
+}
+
 class _WarningBanner extends StatelessWidget {
   const _WarningBanner({
     required this.disk,
@@ -979,18 +1006,12 @@ class _WarningBanner extends StatelessWidget {
         !multiboot &&
         (profile?.kind == IsoKind.linuxHybrid ||
             profile?.kind == IsoKind.genericUefi);
-    final message = existingMultiboot
-        ? 'This stick already has a GRUB menu. Add ISO to this USB copies '
-              'images without erasing. Make bootable still wipes $target first.'
-        : multiboot
-        ? 'This erases every partition on $target, then installs a GRUB menu '
-              'so you can choose Windows Setup or a Linux live ISO at boot. '
-              'Use a spare stick.'
-        : raw
-        ? 'This overwrites every partition on $target with the ISO image '
-              '(typical for a Linux live USB). Use a spare stick.'
-        : 'Make Bootable erases every file on $target. '
-              'Use a spare USB stick, not a backup drive.';
+    final message = warningBannerMessage(
+      target: target,
+      makingMultiboot: multiboot,
+      existingMultiboot: existingMultiboot,
+      rawLinux: raw,
+    );
     return DecoratedBox(
       decoration: BoxDecoration(
         color: amberDim.withValues(alpha: 0.28),

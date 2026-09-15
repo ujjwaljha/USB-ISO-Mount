@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.1
+
+- GRUB Windows entries try `Sources` / `EFI/BOOT` casings on exFAT
+- Write the GRUB menu after copying payloads, and verify every menu title
+- Keep Add/Refresh visible when only `/isos` is mounted
+- Unmount Linux `/tmp` partition mounts before eject
+- Report `/isos` files that refresh cannot turn into a menu entry
+
 ## 1.3.0
 
 - Multiboot USB: GRUB menu on FAT32 `EFIBOOT` + exFAT `ISOBOOT`

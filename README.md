@@ -39,6 +39,8 @@ Linux CLI multiboot also needs partition and exFAT tools:
 sudo apt install parted dosfstools exfatprogs
 ```
 
+Run the Linux CLI with `sudo` so the formatted volumes (often mounted under `/tmp`) are writable. After a write, the tool unmounts those partitions before eject.
+
 ## Desktop app
 
 macOS and Windows only (`flutter run -d linux` is not set up).
@@ -55,7 +57,7 @@ flutter run -d macos
 3. Optionally **Identify ISOs** to inspect the type (Windows x64/ARM, WinPE, Linux). Hybrid Linux images typically fail to mount; a single Linux ISO is **raw-copied** instead
 4. Click **Make bootable USB** (or **Make multiboot USB** when two or more images are selected) and confirm the erase warning
 5. **Cancel** stops a write; if the disk was already erased it will not be bootable
-6. After a multiboot stick exists, select it to use **Add ISO to this USB** (copy one or more images without erasing) or **Refresh GRUB menu** (rebuild the menu from `/isos`)
+6. After a multiboot stick exists, select it to use **Add ISO to this USB** (copy one or more images without erasing) or **Refresh GRUB menu** (rebuild the menu from `/isos`). Those buttons appear when the selected disk has GRUB or an `/isos` folder (ISOBOOT alone is enough). **Make multiboot USB** still erases first.
 
 To wipe a stick without an ISO, choose the USB drive, click **Format USB**, pick FAT32 / exFAT / NTFS and a volume name, then confirm. This erases the drive and leaves a normal data volume (not a bootable installer). NTFS is offered on Windows only.
 
