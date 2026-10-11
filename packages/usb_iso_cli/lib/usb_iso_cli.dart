@@ -32,6 +32,15 @@ Future<int> run(List<String> arguments) async {
   }
 }
 
+/// One `list` row: id, name, size, bus, and mount points (if any).
+String formatDiskListLine(UsbDisk disk) {
+  final bus = disk.busProtocol.trim().isEmpty ? '-' : disk.busProtocol.trim();
+  final mounts = disk.mountPoints.isEmpty
+      ? ''
+      : '  mounts: ${disk.mountPoints.join(', ')}';
+  return '${disk.id}\t${disk.displayName}\t${disk.displaySize}\t$bus$mounts';
+}
+
 String formatCliProgress(WriteProgress progress) {
   final percent = progress.percent == null
       ? ''
@@ -95,12 +104,7 @@ class ListCommand extends Command<int> {
       return 0;
     }
     for (final disk in disks) {
-      final mounts = disk.mountPoints.isEmpty
-          ? ''
-          : '  mounts: ${disk.mountPoints.join(', ')}';
-      stdout.writeln(
-        '${disk.id}\t${disk.displayName}\t${disk.displaySize}$mounts',
-      );
+      stdout.writeln(formatDiskListLine(disk));
     }
     return 0;
   }

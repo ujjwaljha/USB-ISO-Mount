@@ -33,6 +33,29 @@ void main() {
     expect(refresh.description, contains('GRUB'));
   });
 
+  test('list rows show the bus type and mount points', () {
+    const disk = UsbDisk(
+      id: '2',
+      devicePath: r'\\.\PhysicalDrive2',
+      name: 'SanDisk Ultra',
+      sizeBytes: 32 * 1024 * 1024 * 1024,
+      busProtocol: 'USB',
+      isRemovable: true,
+      isInternal: false,
+      isBoot: false,
+      isVirtual: false,
+      mountPoints: [r'E:\'],
+    );
+    expect(
+      formatDiskListLine(disk),
+      '2\tSanDisk Ultra\t32.0 GB\tUSB  mounts: E:\\',
+    );
+    expect(
+      formatDiskListLine(disk.copyWith(mountPoints: const [])),
+      '2\tSanDisk Ultra\t32.0 GB\tUSB',
+    );
+  });
+
   test('rewrites a TTY write line and prints other steps once', () {
     final buffer = StringBuffer();
     final printer = CliProgressWriter(sink: buffer, tty: true);
