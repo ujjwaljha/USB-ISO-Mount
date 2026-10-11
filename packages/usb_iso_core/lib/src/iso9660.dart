@@ -84,16 +84,17 @@ List<String> _parseDirectoryNames(List<int> directory) {
     }
     final idLength = directory[offset + 32];
     if (idLength > 0 && offset + 33 + idLength <= directory.length) {
-      final raw = ascii
-          .decode(
-            directory.sublist(offset + 33, offset + 33 + idLength),
-            allowInvalid: true,
-          )
-          .split(';')
-          .first
-          .trim()
-          .toLowerCase();
-      if (raw.isNotEmpty && raw != '.' && raw != '..' && raw != '\u0000') {
+      final raw = _plainIso9660Name(
+        ascii.decode(
+          directory.sublist(offset + 33, offset + 33 + idLength),
+          allowInvalid: true,
+        ),
+      );
+      if (raw.isNotEmpty &&
+          raw != '.' &&
+          raw != '..' &&
+          raw != '\u0000' &&
+          raw != '\u0001') {
         names.add(raw);
       }
     }
@@ -110,7 +111,9 @@ class Iso9660FileEntry {
     required this.isDirectory,
   });
 
-  /// Lowercase ISO path using `/` separators (`casper/vmlinuz`).
+  /// ISO path using `/` separators, spelled the way GRUB sees it: Joliet
+  /// names keep their case, plain ISO 9660 names are lowercased with the
+  /// `;1` version and trailing dot removed (`casper/vmlinuz`).
   final String path;
   final int lba;
   final int size;
@@ -157,7 +160,7 @@ Iso9660FileEntry? findIso9660Path(String isoPath, String relativePath) {
       final last = i == parts.length - 1;
       _IsoDirRecord? child;
       for (final record in _readIsoDirectory(handle, current)) {
-        if (record.name == name) {
+        if (record.name.toLowerCase() == name) {
           child = record;
           break;
         }
@@ -203,10 +206,11 @@ List<Iso9660FileEntry> listIso9660Directory(
         .split('/')
         .where((part) => part.isNotEmpty)
         .toList();
+    final walked = <String>[];
     for (final name in prefix) {
       _IsoDirRecord? child;
       for (final record in _readIsoDirectory(handle, current)) {
-        if (record.name == name && record.isDirectory) {
+        if (record.name.toLowerCase() == name && record.isDirectory) {
           child = record;
           break;
         }
@@ -214,9 +218,10 @@ List<Iso9660FileEntry> listIso9660Directory(
       if (child == null) {
         return const [];
       }
+      walked.add(child.name);
       current = child;
     }
-    final base = prefix.join('/');
+    final base = walked.join('/');
     return [
       for (final record in _readIsoDirectory(handle, current))
         Iso9660FileEntry(
@@ -369,12 +374,9 @@ _IsoDirRecord? _parseDirRecord(List<int> record, {required bool joliet}) {
   }
   final name = joliet
       ? _decodeJolietName(record.sublist(33, 33 + idLength))
-      : ascii
-            .decode(record.sublist(33, 33 + idLength), allowInvalid: true)
-            .split(';')
-            .first
-            .trim()
-            .toLowerCase();
+      : _plainIso9660Name(
+          ascii.decode(record.sublist(33, 33 + idLength), allowInvalid: true),
+        );
   if (name.isEmpty || name == '.' || name == '..') {
     return null;
   }
@@ -397,12 +399,22 @@ _IsoDirRecord? _parseDirRecord(List<int> record, {required bool joliet}) {
   );
 }
 
+/// Joliet keeps the real file name; GRUB uses it verbatim.
 String _decodeJolietName(List<int> bytes) {
   final units = <int>[];
   for (var i = 0; i + 1 < bytes.length; i += 2) {
     units.add((bytes[i] << 8) | bytes[i + 1]);
   }
-  return String.fromCharCodes(units).split(';').first.trim().toLowerCase();
+  return String.fromCharCodes(units).split(';').first.trim();
+}
+
+/// Plain ISO 9660 identifiers (`VMLINUZ.;1`) become `vmlinuz`, as in GRUB.
+String _plainIso9660Name(String identifier) {
+  var name = identifier.split(';').first.trim();
+  if (name.length > 1 && name.endsWith('.')) {
+    name = name.substring(0, name.length - 1);
+  }
+  return name.toLowerCase();
 }
 
 bool looksLikeLinuxVolumeId(String volumeId) {

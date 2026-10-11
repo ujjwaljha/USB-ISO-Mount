@@ -1268,6 +1268,25 @@ image-type      : read/write
       expect(boot?.kernelPath, 'casper/vmlinuz');
       expect(boot?.initrdPath, 'casper/initrd');
     });
+
+    test('strips the ;1 version and trailing dot like GRUB', () {
+      final iso = File(p.join(temp.path, 'strict.iso'));
+      iso.writeAsBytesSync(
+        _isoWithFiles({
+          'casper/vmlinuz.;1': [1],
+          'casper/initrd.;1': [2],
+        }),
+      );
+      final kernel = findIso9660Path(iso.path, 'casper/vmlinuz');
+      expect(kernel?.path, 'casper/vmlinuz');
+      expect(
+        listIso9660Directory(iso.path, 'casper').map((e) => e.path).toList(),
+        containsAll(['casper/vmlinuz', 'casper/initrd']),
+      );
+      final boot = probeLinuxBootFromIso(iso.path);
+      expect(boot?.kernelPath, 'casper/vmlinuz');
+      expect(boot?.initrdPath, 'casper/initrd');
+    });
   });
 
   group('MultiIsoPlan', () {
