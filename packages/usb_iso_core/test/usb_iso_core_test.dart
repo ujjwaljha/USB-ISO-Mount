@@ -1383,6 +1383,19 @@ image-type      : read/write
     });
   });
 
+  group('bundled GRUB image', () {
+    test('BOOTX64.EFI ships with the package and is a PE image', () async {
+      final bytes = await loadBundledGrubEfi('BOOTX64.EFI');
+      expect(bytes, isNotNull);
+      expect(bytes!.length, greaterThan(100 * 1024));
+      expect(bytes.sublist(0, 2), [0x4D, 0x5A]);
+    });
+
+    test('a missing bundled image resolves to null', () async {
+      expect(await loadBundledGrubEfi('BOOTNOPE.EFI'), isNull);
+    });
+  });
+
   group('ISO 9660 path find/extract', () {
     late Directory temp;
 
