@@ -145,7 +145,10 @@ Helper script (optional):
 ```powershell
 powershell -File scripts/windows_first_run.ps1
 powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
+powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -SecondIso C:\iso\ubuntu.iso -Disk 2
 ```
+
+With `-SecondIso` the script runs the multiboot dry-run from step 7 and then the `add` / `refresh` dry-runs from step 8 against the same disk (those two are expected to fail until the stick has actually been written as multiboot).
 
 ## Repository layout
 
