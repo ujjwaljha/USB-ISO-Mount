@@ -829,7 +829,7 @@ class BootableWriter {
       return MultiIsoDraft(
         isoPath: isoPath,
         profile: profile,
-        linuxBoot: probeLinuxBootFromTree(existing.mountPath),
+        linuxBoot: probeLinuxBootFromTree(existing.mountPath, isoPath: isoPath),
         mountPath: existing.mountPath,
       );
     }
@@ -841,7 +841,7 @@ class BootableWriter {
       return MultiIsoDraft(
         isoPath: isoPath,
         profile: profile,
-        linuxBoot: probeLinuxBootFromTree(mount.mountPath),
+        linuxBoot: probeLinuxBootFromTree(mount.mountPath, isoPath: isoPath),
         mountPath: mount.mountPath,
       );
     } on UsbIsoException {
@@ -894,8 +894,8 @@ class BootableWriter {
     }
     final written = cfg.readAsStringSync();
     for (final item in plan.items) {
-      final title = item.menuTitle.split('"').first;
-      if (title.isEmpty || !written.contains(title)) {
+      final title = 'menuentry "${grubEscape(item.menuTitle)}"';
+      if (item.menuTitle.isEmpty || !written.contains(title)) {
         throw UsbIsoException(
           'Verification failed: the GRUB menu is missing "${item.menuTitle}".',
         );
