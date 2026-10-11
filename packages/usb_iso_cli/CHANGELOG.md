@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1
+
+- `list` prints the bus type (USB, SD, …) after the size
+- `add` / `refresh` find `EFIBOOT` on a re-plugged stick (core 1.4.0)
+
 ## 1.3.0
 
 - `make --iso Win11.iso --iso ubuntu.iso` writes a GRUB multiboot USB
