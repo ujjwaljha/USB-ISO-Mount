@@ -105,21 +105,42 @@ void _writeLinuxEntry(StringBuffer buffer, MultiIsoItem item) {
     return;
   }
   final iso = item.isoPathOnUsb;
-  final args = boot.kernelArguments(iso);
+  final args = _unquotedWord(boot.kernelArguments(iso));
+  final initrds = [
+    for (final path in boot.initrdPaths) '(loop)/${_unquotedWord(path)}',
+  ].join(' ');
   buffer
-    ..writeln('menuentry "${_escape(item.menuTitle)}" {')
-    ..writeln('    set isofile="${_escape(iso)}"')
+    ..writeln('menuentry "${grubEscape(item.menuTitle)}" {')
+    ..writeln('    set isofile="${grubEscape(iso)}"')
     ..writeln(r'    search --file --no-floppy --set=root $isofile')
     ..writeln(r'    loopback loop $isofile')
-    ..writeln('    linux (loop)/${boot.kernelPath} $args')
-    ..writeln('    initrd (loop)/${boot.initrdPath}')
+    ..writeln('    linux (loop)/${_unquotedWord(boot.kernelPath)} $args')
+    ..writeln('    initrd $initrds')
     ..writeln('}')
     ..writeln();
 }
 
-String _escape(String value) {
-  return value.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+/// Escapes [value] for use inside a double-quoted GRUB script string.
+String grubEscape(String value) {
+  return value
+      .replaceAll(r'\', r'\\')
+      .replaceAll('"', r'\"')
+      .replaceAll(r'$', r'\$');
 }
+
+/// Escapes backslashes, quotes, and `$` in an unquoted GRUB script word.
+///
+/// Kernel arguments such as `CDLABEL=Fedora\x20Live` must reach the kernel
+/// with the backslash intact, and a `$` in an ISO name must not be expanded.
+String _unquotedWord(String value) {
+  return value
+      .replaceAll(r'\', r'\\')
+      .replaceAll('"', r'\"')
+      .replaceAll("'", r"\'")
+      .replaceAll(r'$', r'\$');
+}
+
+String _escape(String value) => grubEscape(value);
 
 String _basename(String path) {
   final normalized = path.replaceAll(r'\', '/');

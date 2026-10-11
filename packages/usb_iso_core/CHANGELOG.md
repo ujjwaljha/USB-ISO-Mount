@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.0
+
+- Fedora-family ISOs are told apart: Live media boots with
+  `root=live:CDLABEL=<volume id> rd.live.image iso-scan/filename=`, install
+  media with `inst.stage2=hd:LABEL=ISOBOOT:`
+- Arch ISOs boot with `img_dev=/dev/disk/by-label/ISOBOOT img_loop=` and load
+  the bundled microcode images before the initramfs
+- ISO 9660 paths keep Joliet casing and drop `;1` / trailing dots, as GRUB does
+- GRUB menu strings escape `$`; verification checks the escaped title
+- Add/refresh mount `EFIBOOT` after a re-plug: Windows assigns a drive letter
+  to the EFI System Partition, macOS mounts the slice by name
+- A cancelled or incomplete add removes the partial ISO from `/isos`
+
 ## 1.3.1
 
 - GRUB Windows entries try `Sources` / `EFI/BOOT` casings on exFAT

@@ -120,7 +120,9 @@ The ISO is classified first (do **not** treat a hybrid MBR as Linux by itself �
    - macOS / Linux: split the image to `install.swm` with wimlib
 2. **Linux live ISO** — raw write of the ISO to the whole disk (`dd`-style). On macOS, `authopen` writes `/dev/rdiskN`. On Windows, the disk is taken **offline** for an exclusive write to `\\.\PhysicalDriveN`.
 3. **Generic UEFI** — file-copy, or raw write if the ISO file itself looks like a hybrid disk image
-4. **Multi-ISO (two or more `--iso` / Add ISO)** — GPT with a small FAT32 EFI partition (`EFIBOOT`, GRUB) and an exFAT data partition (`ISOBOOT`). One Windows installer is extracted to the data volume root so Setup finds `\\sources`. Linux live ISOs are copied to `/isos` and loop-booted (Ubuntu/casper, Debian Live, Fedora, Arch). At firmware boot you pick an entry from the GRUB menu. After the stick exists, `add --iso` copies another Linux ISO (or Windows, if the stick has none yet) without erasing, and `refresh` rebuilds the menu if you copied files by hand. Only one Windows installer is supported, because Windows Setup looks for `\\sources` at the volume root.
+4. **Multi-ISO (two or more `--iso` / Add ISO)** — GPT with a small FAT32 EFI partition (`EFIBOOT`, GRUB) and an exFAT data partition (`ISOBOOT`). One Windows installer is extracted to the data volume root so Setup finds `\\sources`. Linux live ISOs are copied to `/isos` and loop-booted with the arguments each family expects: Ubuntu/casper (`boot=casper iso-scan/filename=`), Debian Live and Kali (`boot=live findiso=`), Fedora-family Live media (`root=live:CDLABEL=<volume id> rd.live.image iso-scan/filename=`), Fedora/RHEL-family install media (`inst.stage2=hd:LABEL=ISOBOOT:`), and Arch (`img_dev=/dev/disk/by-label/ISOBOOT img_loop=` plus its microcode images). At firmware boot you pick an entry from the GRUB menu. After the stick exists, `add --iso` copies another Linux ISO (or Windows, if the stick has none yet) without erasing, and `refresh` rebuilds the menu if you copied files by hand. Only one Windows installer is supported, because Windows Setup looks for `\\sources` at the volume root.
+
+Neither Windows nor macOS mounts an EFI System Partition automatically, so after you re-plug a multiboot stick only `ISOBOOT` shows up. `add` and `refresh` handle that: Windows assigns `EFIBOOT` a drive letter (run elevated), macOS mounts the slice (you may get one administrator prompt). If an add is cancelled or the copy comes up short, the partial file is removed from `/isos` so the next `refresh` does not pick it up.
 
 After a file-copy or raw write the volume is flushed and a light verify runs (EFI / installer size, or bytes written). A failed eject after a successful write is reported as a warning, not a failed write.
 
@@ -129,20 +131,24 @@ After a file-copy or raw write the volume is flushed and a light verify runs (EF
 Code is complete; run this on a real Windows 10/11 PC before treating Windows as proven:
 
 1. Install Flutter/Dart. From `app/`: `flutter run -d windows` (accept the UAC prompt). From `packages/usb_iso_cli`: `dart pub get`.
-2. Plug in a spare USB. `dart run usb_iso_cli list` should show it as a numeric id with `BusType` USB.
+2. Plug in a spare USB. `dart run usb_iso_cli list` should show it as a numeric id with bus `USB` in the fourth column.
 3. `dart run usb_iso_cli make --iso <Win11.iso> --disk <N> --dry-run` — expect `windowsDualPartition` and `FAT32 WINBOOT + NTFS WINSETUP`.
 4. `dart run usb_iso_cli make --iso <ubuntu.iso> --disk <N> --dry-run` — expect `rawHybrid`. Mount-DiskImage may fail; that is normal.
 5. In an **unelevated** terminal, `make --yes` (not `--dry-run`) must refuse with the Administrator message.
 6. Elevated write: Win11 (FAT32+NTFS), then Ubuntu (raw). Confirm `file_picker` works in the GUI after UAC.
 7. `make --iso <Win11.iso> --iso <ubuntu.iso> --disk <N> --dry-run` — expect `multiIso` and `FAT32 EFIBOOT (GRUB) + exFAT ISOBOOT`.
 8. After a real multiboot write: `add --iso <fedora.iso> --disk <N> --dry-run` (no erase), then `refresh --disk <N> --dry-run`.
+9. Unplug and re-plug the stick, then repeat step 8 from an **Administrator** terminal: `EFIBOOT` has no drive letter after a re-plug and the tool must assign one before it can find GRUB.
 
 Helper script (optional):
 
 ```powershell
 powershell -File scripts/windows_first_run.ps1
 powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
+powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -SecondIso C:\iso\ubuntu.iso -Disk 2
 ```
+
+With `-SecondIso` the script runs the multiboot dry-run from step 7 and then the `add` / `refresh` dry-runs from step 8 against the same disk (those two are expected to fail until the stick has actually been written as multiboot).
 
 ## Repository layout
 

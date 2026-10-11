@@ -62,13 +62,15 @@ export 'src/platforms/macos_host.dart'
         macosAuthopenFailureMessage,
         macosAuthopenDeniedMessage,
         macosAuthopenRawWritePython,
-        macosEfiPlusExfatArgs;
+        macosEfiPlusExfatArgs,
+        macosUnmountedSlices;
 export 'src/platforms/windows_host.dart'
     show
         usbDiskFromWindowsInfo,
         isAdvancedWindowsBus,
         windowsRawWritePowerShell,
-        windowsEfiPlusExfatPowerShell;
+        windowsEfiPlusExfatPowerShell,
+        windowsAssignDriveLettersPowerShell;
 export 'src/privilege.dart';
 export 'src/process_runner.dart';
 export 'src/safety.dart';

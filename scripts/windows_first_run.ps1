@@ -4,9 +4,12 @@
 # Optional:
 #   powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -Disk 2
 #   powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\ubuntu.iso -Disk 2 -Write
+#   powershell -File scripts/windows_first_run.ps1 -Iso C:\iso\Win11.iso -SecondIso C:\iso\ubuntu.iso -Disk 2
+#     (multiboot dry-run, then `add` and `refresh` dry-runs against the same disk)
 
 param(
   [string]$Iso,
+  [string]$SecondIso,
   [string]$Disk,
   [switch]$Write
 )
@@ -39,6 +42,7 @@ Write-Host '  7. dart run usb_iso_cli make --iso <Win11.iso> --iso <ubuntu.iso> 
 Write-Host '     Expect: multiIso, FAT32 EFIBOOT (GRUB) + exFAT ISOBOOT'
 Write-Host '  8. After a multiboot write: add --iso <fedora.iso> --disk <N> --dry-run'
 Write-Host '     Expect: no erase; then refresh --disk <N> --dry-run'
+Write-Host '  9. Re-plug the stick and repeat 8 elevated: EFIBOOT gets a drive letter assigned'
 Write-Host ''
 
 if (-not (Get-Command dart -ErrorAction SilentlyContinue)) {
@@ -51,16 +55,36 @@ try {
   dart pub get
   dart run usb_iso_cli list
   if ($Iso -and $Disk) {
-    dart run usb_iso_cli make --iso $Iso --disk $Disk --dry-run
+    if ($SecondIso) {
+      # Step 7: multiboot plan. Steps 8/9 only succeed once the stick has
+      # been written as multiboot, so their failure here is informational.
+      dart run usb_iso_cli make --iso $Iso --iso $SecondIso --disk $Disk --dry-run
+      Write-Host ''
+      Write-Host 'Checking add/refresh against the current contents of the disk (expected to fail on a stick that is not multiboot yet):'
+      $previousPreference = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try {
+        dart run usb_iso_cli add --iso $SecondIso --disk $Disk --dry-run
+        dart run usb_iso_cli refresh --disk $Disk --dry-run
+      } finally {
+        $ErrorActionPreference = $previousPreference
+      }
+    } else {
+      dart run usb_iso_cli make --iso $Iso --disk $Disk --dry-run
+    }
     if ($Write) {
       if (-not (Test-Admin)) {
         Write-Host 'Refusing -Write: this shell is not Administrator.'
         exit 1
       }
-      dart run usb_iso_cli make --iso $Iso --disk $Disk --yes
+      if ($SecondIso) {
+        dart run usb_iso_cli make --iso $Iso --iso $SecondIso --disk $Disk --yes
+      } else {
+        dart run usb_iso_cli make --iso $Iso --disk $Disk --yes
+      }
     }
   } else {
-    Write-Host 'Pass -Iso and -Disk to run a dry-run against a real image.'
+    Write-Host 'Pass -Iso and -Disk to run a dry-run against a real image (add -SecondIso for the multiboot plan).'
   }
 } finally {
   Pop-Location

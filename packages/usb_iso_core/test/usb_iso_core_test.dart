@@ -1196,6 +1196,59 @@ image-type      : read/write
       expect(args, contains('esp'));
       expect(args, contains('ISOBOOT'));
     });
+
+    test('Windows assigns letters to letterless partitions', () {
+      final script = windowsAssignDriveLettersPowerShell(diskNumber: 3);
+      expect(script, contains(r'$diskNumber = 3'));
+      expect(script, contains('Add-PartitionAccessPath'));
+      expect(script, contains('-AssignDriveLetter'));
+      expect(script, contains('diskpart /s'));
+      expect(script, contains(r"-not $_.DriveLetter"));
+    });
+
+    test('macOS finds unmounted EFIBOOT and ISOBOOT slices', () {
+      final listJson = {
+        'AllDisksAndPartitions': [
+          {
+            'DeviceIdentifier': 'disk4',
+            'Partitions': [
+              {
+                'DeviceIdentifier': 'disk4s1',
+                'VolumeName': 'EFIBOOT',
+                'Content': 'EFI',
+              },
+              {
+                'DeviceIdentifier': 'disk4s2',
+                'VolumeName': 'ISOBOOT',
+                'MountPoint': '/Volumes/ISOBOOT',
+              },
+            ],
+          },
+          {
+            'DeviceIdentifier': 'disk5',
+            'Partitions': [
+              {'DeviceIdentifier': 'disk5s1', 'VolumeName': 'EFIBOOT'},
+            ],
+          },
+        ],
+      };
+      expect(
+        macosUnmountedSlices(
+          listJson,
+          diskId: 'disk4',
+          labels: {'EFIBOOT', 'ISOBOOT'},
+        ),
+        ['disk4s1'],
+      );
+      expect(
+        macosUnmountedSlices(listJson, diskId: 'disk4', labels: {'ISOBOOT'}),
+        isEmpty,
+      );
+      expect(
+        macosUnmountedSlices(listJson, diskId: 'disk6', labels: {'EFIBOOT'}),
+        isEmpty,
+      );
+    });
   });
 
   group('LinuxBootFiles', () {
@@ -1223,6 +1276,123 @@ image-type      : read/write
         boot.kernelArguments('/isos/ubuntu.iso'),
         contains('iso-scan/filename=/isos/ubuntu.iso'),
       );
+    });
+
+    test('keeps the real file name casing for GRUB', () {
+      Directory(p.join(temp.path, 'casper')).createSync(recursive: true);
+      File(p.join(temp.path, 'casper', 'vmlinuz')).writeAsBytesSync([1]);
+      File(p.join(temp.path, 'casper', 'initrd.LZ')).writeAsBytesSync([2]);
+      final boot = probeLinuxBootFromTree(temp.path);
+      expect(boot?.initrdPath, 'casper/initrd.LZ');
+    });
+
+    test('Fedora Live boots with the ISO volume label', () {
+      final iso = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(
+          _isoWithFiles({
+            'images/pxeboot/vmlinuz': [1],
+            'images/pxeboot/initrd.img': [2],
+            'LiveOS/squashfs.img': [3],
+          }),
+        );
+      final fromIso = probeLinuxBootFromIso(iso.path);
+      expect(fromIso?.kind, LinuxLiveKind.fedoraLive);
+      expect(fromIso?.kernelPath, 'images/pxeboot/vmlinuz');
+      expect(fromIso?.initrdPath, 'images/pxeboot/initrd.img');
+      expect(fromIso?.volumeId, 'TESTISO');
+      final args = fromIso!.kernelArguments('/isos/fedora.iso');
+      expect(args, contains('root=live:CDLABEL=TESTISO'));
+      expect(args, contains('rd.live.image'));
+      expect(args, contains('iso-scan/filename=/isos/fedora.iso'));
+      expect(args, isNot(contains('inst.stage2')));
+
+      Directory(
+        p.join(temp.path, 'images', 'pxeboot'),
+      ).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'images', 'pxeboot', 'vmlinuz'),
+      ).writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'images', 'pxeboot', 'initrd.img'),
+      ).writeAsBytesSync([2]);
+      Directory(p.join(temp.path, 'LiveOS')).createSync();
+      File(p.join(temp.path, 'LiveOS', 'squashfs.img')).writeAsBytesSync([3]);
+      final fromTree = probeLinuxBootFromTree(temp.path, isoPath: iso.path);
+      expect(fromTree?.kind, LinuxLiveKind.fedoraLive);
+      expect(fromTree?.volumeId, 'TESTISO');
+      expect(probeLinuxBootFromTree(temp.path)?.volumeId, isNull);
+    });
+
+    test('Fedora install media uses inst.stage2 on ISOBOOT', () {
+      Directory(
+        p.join(temp.path, 'images', 'pxeboot'),
+      ).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'images', 'pxeboot', 'vmlinuz'),
+      ).writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'images', 'pxeboot', 'initrd.img'),
+      ).writeAsBytesSync([2]);
+      File(p.join(temp.path, 'images', 'install.img')).writeAsBytesSync([3]);
+      final boot = probeLinuxBootFromTree(temp.path);
+      expect(boot?.kind, LinuxLiveKind.fedora);
+      expect(
+        boot?.kernelArguments('/isos/rocky.iso'),
+        contains('inst.stage2=hd:LABEL=ISOBOOT:/isos/rocky.iso'),
+      );
+    });
+
+    test('Arch gets img_dev/img_loop and microcode initrds', () {
+      Directory(
+        p.join(temp.path, 'arch', 'boot', 'x86_64'),
+      ).createSync(recursive: true);
+      File(
+        p.join(temp.path, 'arch', 'boot', 'x86_64', 'vmlinuz-linux'),
+      ).writeAsBytesSync([1]);
+      File(
+        p.join(temp.path, 'arch', 'boot', 'x86_64', 'initramfs-linux.img'),
+      ).writeAsBytesSync([2]);
+      File(
+        p.join(temp.path, 'arch', 'boot', 'intel-ucode.img'),
+      ).writeAsBytesSync([3]);
+      final boot = probeLinuxBootFromTree(temp.path);
+      expect(boot?.kind, LinuxLiveKind.arch);
+      expect(boot?.extraInitrdPaths, ['arch/boot/intel-ucode.img']);
+      expect(boot?.initrdPaths, [
+        'arch/boot/intel-ucode.img',
+        'arch/boot/x86_64/initramfs-linux.img',
+      ]);
+      final args = boot!.kernelArguments('/isos/arch.iso');
+      expect(args, contains('img_dev=/dev/disk/by-label/ISOBOOT'));
+      expect(args, contains('img_loop=/isos/arch.iso'));
+      expect(args, contains('earlymodules=loop'));
+    });
+
+    test('CDLABEL encodes spaces the way udev does', () {
+      expect(cdLabelForKernel('Fedora Live'), r'Fedora\x20Live');
+      expect(cdLabelForKernel('a/b'), r'a\x2fb');
+      const boot = LinuxBootFiles(
+        kernelPath: 'images/pxeboot/vmlinuz',
+        initrdPath: 'images/pxeboot/initrd.img',
+        kind: LinuxLiveKind.fedoraLive,
+      );
+      expect(
+        boot.kernelArguments('/isos/f.iso'),
+        allOf(contains('rd.live.image'), isNot(contains('CDLABEL'))),
+      );
+    });
+  });
+
+  group('bundled GRUB image', () {
+    test('BOOTX64.EFI ships with the package and is a PE image', () async {
+      final bytes = await loadBundledGrubEfi('BOOTX64.EFI');
+      expect(bytes, isNotNull);
+      expect(bytes!.length, greaterThan(100 * 1024));
+      expect(bytes.sublist(0, 2), [0x4D, 0x5A]);
+    });
+
+    test('a missing bundled image resolves to null', () async {
+      expect(await loadBundledGrubEfi('BOOTNOPE.EFI'), isNull);
     });
   });
 
@@ -1263,6 +1433,25 @@ image-type      : read/write
           'casper/vmlinuz': [1],
           'casper/initrd': [2],
         }),
+      );
+      final boot = probeLinuxBootFromIso(iso.path);
+      expect(boot?.kernelPath, 'casper/vmlinuz');
+      expect(boot?.initrdPath, 'casper/initrd');
+    });
+
+    test('strips the ;1 version and trailing dot like GRUB', () {
+      final iso = File(p.join(temp.path, 'strict.iso'));
+      iso.writeAsBytesSync(
+        _isoWithFiles({
+          'casper/vmlinuz.;1': [1],
+          'casper/initrd.;1': [2],
+        }),
+      );
+      final kernel = findIso9660Path(iso.path, 'casper/vmlinuz');
+      expect(kernel?.path, 'casper/vmlinuz');
+      expect(
+        listIso9660Directory(iso.path, 'casper').map((e) => e.path).toList(),
+        containsAll(['casper/vmlinuz', 'casper/initrd']),
       );
       final boot = probeLinuxBootFromIso(iso.path);
       expect(boot?.kernelPath, 'casper/vmlinuz');
@@ -1377,6 +1566,70 @@ image-type      : read/write
       expect(cfg, contains('/isos/ubuntu.iso'));
       expect(cfg, contains('iso-scan/filename=/isos/ubuntu.iso'));
       expect(cfg, contains('loopback loop'));
+    });
+
+    test('GRUB menu escapes \$ and loads every initrd on one line', () {
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 1));
+      final arch = File(p.join(temp.path, 'arch \$2026.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 2));
+      final fedora = File(p.join(temp.path, 'fedora.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 3));
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      File(p.join(win.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+      final plan = planMultiboot(
+        drafts: [
+          MultiIsoDraft(
+            isoPath: winIso.path,
+            profile: IsoInspector().inspectMounted(win.path),
+            mountPath: win.path,
+          ),
+          MultiIsoDraft(
+            isoPath: arch.path,
+            profile: _linuxProfile(arch.path),
+            linuxBoot: const LinuxBootFiles(
+              kernelPath: 'arch/boot/x86_64/vmlinuz-linux',
+              initrdPath: 'arch/boot/x86_64/initramfs-linux.img',
+              kind: LinuxLiveKind.arch,
+              extraInitrdPaths: [
+                'arch/boot/intel-ucode.img',
+                'arch/boot/amd-ucode.img',
+              ],
+            ),
+          ),
+          MultiIsoDraft(
+            isoPath: fedora.path,
+            profile: _linuxProfile(fedora.path),
+            linuxBoot: const LinuxBootFiles(
+              kernelPath: 'images/pxeboot/vmlinuz',
+              initrdPath: 'images/pxeboot/initrd.img',
+              kind: LinuxLiveKind.fedoraLive,
+              volumeId: 'Fedora WS Live',
+            ),
+          ),
+        ],
+        diskSizeBytes: 64 * 1024 * 1024 * 1024,
+      );
+      final cfg = buildGrubConfig(plan);
+      expect(cfg, contains(r'menuentry "Linux live ISO: arch \$2026" {'));
+      expect(cfg, contains('set isofile="/isos/arch__2026.iso"'));
+      expect(
+        cfg,
+        contains(
+          'initrd (loop)/arch/boot/intel-ucode.img '
+          '(loop)/arch/boot/amd-ucode.img '
+          '(loop)/arch/boot/x86_64/initramfs-linux.img',
+        ),
+      );
+      expect(
+        cfg,
+        contains(
+          'img_dev=/dev/disk/by-label/ISOBOOT img_loop=/isos/arch__2026.iso',
+        ),
+      );
+      expect(cfg, contains(r'root=live:CDLABEL=Fedora\\x20WS\\x20Live'));
+      expect(cfg, contains('initrd (loop)/images/pxeboot/initrd.img\n'));
     });
 
     test(
@@ -1702,6 +1955,99 @@ image-type      : read/write
       );
       expect(host.eraseCalls, 0);
     });
+
+    test('verifies a menu whose title needed GRUB escaping', () async {
+      final winIso = File(p.join(temp.path, 'Win11.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 1));
+      final linuxIso = File(p.join(temp.path, 'ubuntu \$24.iso'))
+        ..writeAsBytesSync(List<int>.filled(2048, 2));
+      final win = Directory(p.join(temp.path, 'win'))..createSync();
+      _writeWindowsLayout(win, wimBytes: 8);
+      File(p.join(win.path, 'sources', 'boot.wim')).writeAsBytesSync([1]);
+      final linux = Directory(p.join(temp.path, 'linux'))..createSync();
+      _writeLinuxLayout(linux);
+      File(p.join(linux.path, 'casper', 'initrd')).writeAsBytesSync([9]);
+      final dest = Directory(p.join(temp.path, 'dest'))..createSync();
+      final host = FakeHost(
+        mount: IsoMount(isoPath: winIso.path, mountPath: win.path),
+        mounts: {
+          winIso.path: IsoMount(isoPath: winIso.path, mountPath: win.path),
+          linuxIso.path: IsoMount(
+            isoPath: linuxIso.path,
+            mountPath: linux.path,
+          ),
+        },
+      )..destination = dest;
+      final events = await BootableWriter(host: host)
+          .writeMulti(
+            MultiWriteRequest(
+              isoPaths: [winIso.path, linuxIso.path],
+              disk: _usb(),
+              confirmed: true,
+            ),
+          )
+          .toList();
+      expect(events.last.step, WriteStep.done);
+      final cfg = File(
+        p.join(dest.path, 'boot', 'grub', 'grub.cfg'),
+      ).readAsStringSync();
+      expect(cfg, contains(r'menuentry "Linux live ISO: ubuntu \$24" {'));
+      expect(
+        File(
+          p.join('${dest.path}_data', 'isos', 'ubuntu__24.iso'),
+        ).existsSync(),
+        isTrue,
+      );
+    });
+
+    test(
+      'add removes a partially copied ISO when cancelled mid-copy',
+      () async {
+        final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+        final data = Directory(p.join(temp.path, 'data'))..createSync();
+        _writeMultibootStick(esp: dest, data: data);
+        final extra = File(p.join(temp.path, 'fedora.iso'))
+          ..writeAsBytesSync(
+            _isoWithFiles({
+              'casper/vmlinuz': [1],
+              'casper/initrd': [2],
+            }),
+          );
+        final host = FakeHost(
+          mount: IsoMount(isoPath: extra.path, mountPath: extra.path),
+        );
+        final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+        final token = CancellationToken();
+        Object? failure;
+        try {
+          await for (final event in BootableWriter(host: host).addIso(
+            MultiAddRequest(
+              isoPath: extra.path,
+              disk: disk,
+              confirmed: true,
+              cancellation: token,
+            ),
+          )) {
+            if (event.step == WriteStep.copying) {
+              token.cancel();
+            }
+          }
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, isA<WriteCancelledException>());
+        expect(
+          File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(),
+          isFalse,
+        );
+        expect(
+          File(
+            p.join(dest.path, 'boot', 'grub', 'grub.cfg'),
+          ).readAsStringSync(),
+          isNot(contains('fedora.iso')),
+        );
+      },
+    );
 
     test('add respects cancellation before copying', () async {
       final dest = Directory(p.join(temp.path, 'esp'))..createSync();

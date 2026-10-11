@@ -104,6 +104,34 @@ Format-Volume -Partition \$data -FileSystem exFAT -NewFileSystemLabel '$isoBootV
 ''';
 }
 
+/// PowerShell that assigns a drive letter to every partition on [diskNumber]
+/// that lacks one.
+///
+/// Windows never auto-mounts an EFI System Partition, so after a multiboot
+/// stick is re-plugged `EFIBOOT` has no letter and add/refresh cannot find
+/// GRUB. `Add-PartitionAccessPath` handles most cases; `diskpart assign` is
+/// the fallback for firmware/driver combinations that reject it.
+String windowsAssignDriveLettersPowerShell({required int diskNumber}) {
+  return '''
+\$ErrorActionPreference = 'SilentlyContinue'
+\$diskNumber = $diskNumber
+Get-Partition -DiskNumber \$diskNumber |
+  Where-Object { -not \$_.DriveLetter -and \$_.Type -ne 'Reserved' -and \$_.Size -gt 1MB } |
+  ForEach-Object {
+    \$partition = \$_
+    try {
+      Add-PartitionAccessPath -DiskNumber \$diskNumber -PartitionNumber \$partition.PartitionNumber -AssignDriveLetter -ErrorAction Stop | Out-Null
+    } catch {
+      \$script = "select disk \$diskNumber`r`nselect partition \$(\$partition.PartitionNumber)`r`nassign`r`nexit`r`n"
+      \$tmp = [IO.Path]::GetTempFileName()
+      Set-Content -LiteralPath \$tmp -Value \$script -Encoding ASCII
+      diskpart /s \$tmp | Out-Null
+      Remove-Item -LiteralPath \$tmp -Force
+    }
+  }
+''';
+}
+
 bool isAdvancedWindowsBus(String bus) {
   final value = bus.toUpperCase();
   return value == 'SD' ||
@@ -453,6 +481,14 @@ Format-Volume -Partition \$part -FileSystem '$fs' -NewFileSystemLabel '$escapedL
     final number = int.parse(disk.id);
     for (var i = 0; i < 40; i++) {
       if (isDualVolumeLayout(layout)) {
+        // The ESP of a re-plugged multiboot stick has no letter. Try to
+        // assign one up front and again every couple of seconds in case a
+        // partition shows up late.
+        if (i % 8 == 0) {
+          await _powershellFile(
+            windowsAssignDriveLettersPowerShell(diskNumber: number),
+          );
+        }
         final result = await _powershell('''
 \$ErrorActionPreference = 'Stop'
 Get-Partition -DiskNumber $number | ForEach-Object {

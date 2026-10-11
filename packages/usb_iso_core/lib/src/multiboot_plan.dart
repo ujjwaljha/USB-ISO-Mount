@@ -142,7 +142,7 @@ MultiIsoPlan planMultiboot({
     final linuxBoot =
         draft.linuxBoot ??
         (draft.mountPath != null
-            ? probeLinuxBootFromTree(draft.mountPath!)
+            ? probeLinuxBootFromTree(draft.mountPath!, isoPath: draft.isoPath)
             : null) ??
         probeLinuxBootFromIso(draft.isoPath);
     if (linuxBoot == null) {

@@ -674,13 +674,30 @@ class BootableWriter {
         await isoDir.create(recursive: true);
         final used = {
           for (final item in existing.linux) item.usbIsoFileName.toLowerCase(),
+          ...existing.skippedIsoFileNames.map((name) => name.toLowerCase()),
         };
         final name = uniqueIsoFileName(request.isoPath, used);
-        await copyFileWithProgress(
-          request.isoPath,
-          p.join(isoDir.path, name),
-          cancellation: request.cancellation,
-        );
+        final target = File(p.join(isoDir.path, name));
+        final total = File(request.isoPath).lengthSync();
+        try {
+          await copyFileWithProgress(
+            request.isoPath,
+            target.path,
+            cancellation: request.cancellation,
+          );
+        } catch (_) {
+          // A truncated ISO would be picked up by the next refresh and
+          // produce a menu entry that cannot boot. Remove it.
+          _deleteQuietly(target);
+          rethrow;
+        }
+        if (!target.existsSync() || target.lengthSync() != total) {
+          _deleteQuietly(target);
+          throw UsbIsoException(
+            'Copy of ${p.basename(request.isoPath)} to the USB was incomplete. '
+            'The partial file was removed; check free space and try again.',
+          );
+        }
       }
 
       request.cancellation?.throwIfCancelled();
@@ -773,6 +790,16 @@ class BootableWriter {
     );
   }
 
+  void _deleteQuietly(File file) {
+    try {
+      if (file.existsSync()) {
+        file.deleteSync();
+      }
+    } catch (_) {
+      // Best-effort cleanup after a failed copy.
+    }
+  }
+
   Future<PreparedVolumes> _resolveMultibootVolumes(UsbDisk disk) async {
     final detected = detectMultibootMounts(disk.mountPoints);
     if (detected != null) {
@@ -829,7 +856,7 @@ class BootableWriter {
       return MultiIsoDraft(
         isoPath: isoPath,
         profile: profile,
-        linuxBoot: probeLinuxBootFromTree(existing.mountPath),
+        linuxBoot: probeLinuxBootFromTree(existing.mountPath, isoPath: isoPath),
         mountPath: existing.mountPath,
       );
     }
@@ -841,7 +868,7 @@ class BootableWriter {
       return MultiIsoDraft(
         isoPath: isoPath,
         profile: profile,
-        linuxBoot: probeLinuxBootFromTree(mount.mountPath),
+        linuxBoot: probeLinuxBootFromTree(mount.mountPath, isoPath: isoPath),
         mountPath: mount.mountPath,
       );
     } on UsbIsoException {
@@ -894,8 +921,8 @@ class BootableWriter {
     }
     final written = cfg.readAsStringSync();
     for (final item in plan.items) {
-      final title = item.menuTitle.split('"').first;
-      if (title.isEmpty || !written.contains(title)) {
+      final title = 'menuentry "${grubEscape(item.menuTitle)}"';
+      if (item.menuTitle.isEmpty || !written.contains(title)) {
         throw UsbIsoException(
           'Verification failed: the GRUB menu is missing "${item.menuTitle}".',
         );
