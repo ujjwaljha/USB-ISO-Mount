@@ -1196,6 +1196,59 @@ image-type      : read/write
       expect(args, contains('esp'));
       expect(args, contains('ISOBOOT'));
     });
+
+    test('Windows assigns letters to letterless partitions', () {
+      final script = windowsAssignDriveLettersPowerShell(diskNumber: 3);
+      expect(script, contains(r'$diskNumber = 3'));
+      expect(script, contains('Add-PartitionAccessPath'));
+      expect(script, contains('-AssignDriveLetter'));
+      expect(script, contains('diskpart /s'));
+      expect(script, contains(r"-not $_.DriveLetter"));
+    });
+
+    test('macOS finds unmounted EFIBOOT and ISOBOOT slices', () {
+      final listJson = {
+        'AllDisksAndPartitions': [
+          {
+            'DeviceIdentifier': 'disk4',
+            'Partitions': [
+              {
+                'DeviceIdentifier': 'disk4s1',
+                'VolumeName': 'EFIBOOT',
+                'Content': 'EFI',
+              },
+              {
+                'DeviceIdentifier': 'disk4s2',
+                'VolumeName': 'ISOBOOT',
+                'MountPoint': '/Volumes/ISOBOOT',
+              },
+            ],
+          },
+          {
+            'DeviceIdentifier': 'disk5',
+            'Partitions': [
+              {'DeviceIdentifier': 'disk5s1', 'VolumeName': 'EFIBOOT'},
+            ],
+          },
+        ],
+      };
+      expect(
+        macosUnmountedSlices(
+          listJson,
+          diskId: 'disk4',
+          labels: {'EFIBOOT', 'ISOBOOT'},
+        ),
+        ['disk4s1'],
+      );
+      expect(
+        macosUnmountedSlices(listJson, diskId: 'disk4', labels: {'ISOBOOT'}),
+        isEmpty,
+      );
+      expect(
+        macosUnmountedSlices(listJson, diskId: 'disk6', labels: {'EFIBOOT'}),
+        isEmpty,
+      );
+    });
   });
 
   group('LinuxBootFiles', () {

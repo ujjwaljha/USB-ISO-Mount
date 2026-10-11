@@ -31,6 +31,41 @@ List<String> macosEfiPlusExfatArgs(String diskId) {
   ];
 }
 
+/// Slices of [diskId] whose volume name is one of [labels] and that have no
+/// mount point, from `diskutil list -plist` JSON.
+///
+/// macOS does not auto-mount an EFI System Partition, so `EFIBOOT` is
+/// normally missing after a multiboot stick is re-plugged.
+List<String> macosUnmountedSlices(
+  Map<String, dynamic> listJson, {
+  required String diskId,
+  required Set<String> labels,
+}) {
+  final wanted = {for (final label in labels) label.toUpperCase()};
+  final found = <String>[];
+  final entries = listJson['AllDisksAndPartitions'] as List<dynamic>? ?? [];
+  for (final entry in entries) {
+    if (entry is! Map || asString(entry['DeviceIdentifier']) != diskId) {
+      continue;
+    }
+    final parts = entry['Partitions'] as List<dynamic>? ?? const [];
+    for (final part in parts) {
+      if (part is! Map) {
+        continue;
+      }
+      final slice = asString(part['DeviceIdentifier']);
+      final name = asString(part['VolumeName']).trim().toUpperCase();
+      if (slice.isEmpty || !wanted.contains(name)) {
+        continue;
+      }
+      if (asString(part['MountPoint']).isEmpty) {
+        found.add(slice);
+      }
+    }
+  }
+  return found;
+}
+
 /// Parses `diskutil info` JSON into a candidate USB disk, or null if unsafe.
 UsbDisk? usbDiskFromMacosInfo(
   Map<String, dynamic> info, {
@@ -424,6 +459,7 @@ class MacosHost implements HostPlatform {
     UsbDisk disk, {
     DiskLayout layout = DiskLayout.fat32,
   }) async {
+    final elevatedTried = <String>{};
     for (var i = 0; i < 40; i++) {
       if (layout == DiskLayout.efiPlusExfat) {
         await _runner.run('diskutil', ['mountDisk', disk.id]);
@@ -431,8 +467,18 @@ class MacosHost implements HostPlatform {
       if (isDualVolumeLayout(layout)) {
         final bootLabel = bootVolumeLabelFor(layout);
         final dataLabel = dataVolumeLabelFor(layout)!;
-        final boot = await _volumePathOnDisk(disk, bootLabel);
-        final data = await _volumePathOnDisk(disk, dataLabel);
+        var boot = await _volumePathOnDisk(disk, bootLabel);
+        var data = await _volumePathOnDisk(disk, dataLabel);
+        if (layout == DiskLayout.efiPlusExfat &&
+            (boot == null || data == null)) {
+          // mountDisk skips the EFI System Partition; mount it by slice.
+          await _mountLabeledSlices(disk, {
+            if (boot == null) bootLabel,
+            if (data == null) dataLabel,
+          }, elevatedTried: elevatedTried);
+          boot ??= await _volumePathOnDisk(disk, bootLabel);
+          data ??= await _volumePathOnDisk(disk, dataLabel);
+        }
         if (boot != null && data != null) {
           return PreparedVolumes(bootMount: boot, dataMount: data);
         }
@@ -447,6 +493,38 @@ class MacosHost implements HostPlatform {
     throw UsbIsoException(
       'Timed out waiting for ${isDualVolumeLayout(layout) ? '${bootVolumeLabelFor(layout)}/${dataVolumeLabelFor(layout)}' : _volumeLabel} to appear on ${disk.id}.',
     );
+  }
+
+  /// Mounts slices of [disk] labelled with one of [labels] that are not
+  /// mounted. A plain `diskutil mount` is tried first; the ESP usually needs
+  /// administrator rights, which are requested at most once per slice.
+  Future<void> _mountLabeledSlices(
+    UsbDisk disk,
+    Set<String> labels, {
+    required Set<String> elevatedTried,
+  }) async {
+    if (labels.isEmpty) {
+      return;
+    }
+    final list = await _runner.run('diskutil', ['list', '-plist', disk.id]);
+    if (!list.success) {
+      return;
+    }
+    Map<String, dynamic> json;
+    try {
+      json = await _plistToJson(list.stdout);
+    } on Object {
+      return;
+    }
+    final slices = macosUnmountedSlices(json, diskId: disk.id, labels: labels);
+    for (final slice in slices) {
+      final plain = await _runner.run('diskutil', ['mount', slice]);
+      if (plain.success || elevatedTried.contains(slice)) {
+        continue;
+      }
+      elevatedTried.add(slice);
+      await _runner.run('diskutil', ['mount', slice], elevated: true);
+    }
   }
 
   Future<String?> _volumePathOnDisk(UsbDisk disk, String label) async {
