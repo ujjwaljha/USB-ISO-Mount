@@ -1987,6 +1987,55 @@ image-type      : read/write
       );
     });
 
+    test(
+      'add removes a partially copied ISO when cancelled mid-copy',
+      () async {
+        final dest = Directory(p.join(temp.path, 'esp'))..createSync();
+        final data = Directory(p.join(temp.path, 'data'))..createSync();
+        _writeMultibootStick(esp: dest, data: data);
+        final extra = File(p.join(temp.path, 'fedora.iso'))
+          ..writeAsBytesSync(
+            _isoWithFiles({
+              'casper/vmlinuz': [1],
+              'casper/initrd': [2],
+            }),
+          );
+        final host = FakeHost(
+          mount: IsoMount(isoPath: extra.path, mountPath: extra.path),
+        );
+        final disk = _usb().copyWith(mountPoints: [dest.path, data.path]);
+        final token = CancellationToken();
+        Object? failure;
+        try {
+          await for (final event in BootableWriter(host: host).addIso(
+            MultiAddRequest(
+              isoPath: extra.path,
+              disk: disk,
+              confirmed: true,
+              cancellation: token,
+            ),
+          )) {
+            if (event.step == WriteStep.copying) {
+              token.cancel();
+            }
+          }
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, isA<WriteCancelledException>());
+        expect(
+          File(p.join(data.path, 'isos', 'fedora.iso')).existsSync(),
+          isFalse,
+        );
+        expect(
+          File(
+            p.join(dest.path, 'boot', 'grub', 'grub.cfg'),
+          ).readAsStringSync(),
+          isNot(contains('fedora.iso')),
+        );
+      },
+    );
+
     test('add respects cancellation before copying', () async {
       final dest = Directory(p.join(temp.path, 'esp'))..createSync();
       final data = Directory(p.join(temp.path, 'data'))..createSync();
